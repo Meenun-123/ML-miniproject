@@ -5,9 +5,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-*.onnx*
-*.pt
-weights/*.data
+# Model weights are pushed (each <100MB)
 bin/
 data/*.csv
 data/*.zst
