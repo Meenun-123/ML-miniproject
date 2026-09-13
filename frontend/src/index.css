@@ -1,0 +1,80 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #090d16;
+    color: #f1f5f9;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    overflow-x: hidden;
+  }
+}
+
+@keyframes drawArrow {
+  from {
+    stroke-dashoffset: 1;
+    opacity: 0.2;
+  }
+  to {
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+}
+
+.animated-arrow-path {
+  animation: drawArrow 300ms cubic-bezier(0.25, 1, 0.5, 1) forwards;
+}
+
+@keyframes crimsonPulse {
+  0%, 100% {
+    box-shadow: inset 0 0 16px rgba(239, 68, 68, 0.9), 0 0 14px rgba(239, 68, 68, 0.7);
+    opacity: 0.95;
+  }
+  50% {
+    box-shadow: inset 0 0 28px rgba(239, 68, 68, 1), 0 0 24px rgba(239, 68, 68, 0.9);
+    opacity: 0.75;
+  }
+}
+
+.crimson-king-pulse {
+  animation: crimsonPulse 1.4s ease-in-out infinite;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.4);
+  border-radius: 9999px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(71, 85, 105, 0.6);
+  border-radius: 9999px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.9);
+}
+
+/* Custom Pawn Promotion Dialog Dark Glassmorphism */
+div[title="Choose promotion piece"] {
+  background-color: rgba(15, 23, 42, 0.96) !important;
+  backdrop-filter: blur(16px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.18) !important;
+  border-radius: 1rem !important;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.85) !important;
+  gap: 12px !important;
+  padding: 8px 16px !important;
+  box-sizing: border-box !important;
+}
+
+div[title="Choose promotion piece"] > div[data-piece] {
+  border-radius: 0.75rem !important;
+  transition: transform 0.15s ease, background-color 0.15s ease !important;
+}
+
+div[title="Choose promotion piece"] > div[data-piece]:hover {
+  transform: scale(1.1) !important;
+  background-color: rgba(255, 255, 255, 0.12) !important;
+}

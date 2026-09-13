@@ -1,0 +1,249 @@
+[
+  {
+    "game_id": 1,
+    "moves_count": 34,
+    "acpl": 94.2,
+    "final_elo": 1020,
+    "result": "loss",
+    "blunders": 6
+  },
+  {
+    "game_id": 2,
+    "moves_count": 42,
+    "acpl": 82.5,
+    "final_elo": 1110,
+    "result": "loss",
+    "blunders": 5
+  },
+  {
+    "game_id": 3,
+    "moves_count": 28,
+    "acpl": 86.1,
+    "final_elo": 1080,
+    "result": "loss",
+    "blunders": 5
+  },
+  {
+    "game_id": 4,
+    "moves_count": 56,
+    "acpl": 68.4,
+    "final_elo": 1260,
+    "result": "draw",
+    "blunders": 3
+  },
+  {
+    "game_id": 5,
+    "moves_count": 45,
+    "acpl": 52.3,
+    "final_elo": 1450,
+    "result": "win",
+    "blunders": 1
+  },
+  {
+    "game_id": 6,
+    "moves_count": 82,
+    "acpl": 125.0,
+    "final_elo": 1172,
+    "result": "loss",
+    "blunders": 7
+  },
+  {
+    "game_id": 7,
+    "moves_count": 6,
+    "acpl": 2.3,
+    "game_elo": 2900,
+    "final_elo": 2900,
+    "cumulative_elo": 1175,
+    "accuracy": 99.1,
+    "blunders": 0,
+    "mistakes": 0,
+    "inaccuracies": 0,
+    "best_moves": 3,
+    "result": "win",
+    "delta_elo": 2300
+  },
+  {
+    "game_id": 8,
+    "moves_count": 7,
+    "acpl": 15.2,
+    "game_elo": 2814,
+    "final_elo": 2814,
+    "cumulative_elo": 1585,
+    "accuracy": 94.1,
+    "blunders": 0,
+    "mistakes": 1,
+    "inaccuracies": 0,
+    "best_moves": 3,
+    "result": "win",
+    "delta_elo": -86
+  },
+  {
+    "game_id": 9,
+    "moves_count": 52,
+    "acpl": 125.0,
+    "final_elo": 1172,
+    "result": "loss",
+    "blunders": 7
+  },
+  {
+    "game_id": 10,
+    "moves_count": 53,
+    "acpl": 167.7,
+    "final_elo": 767,
+    "result": "loss",
+    "blunders": 14
+  },
+  {
+    "game_id": 11,
+    "moves_count": 36,
+    "acpl": 110.0,
+    "final_elo": 1315,
+    "result": "loss",
+    "blunders": 4
+  },
+  {
+    "game_id": 12,
+    "moves_count": 36,
+    "acpl": 125.0,
+    "final_elo": 1172,
+    "result": "loss",
+    "blunders": 7
+  },
+  {
+    "game_id": 13,
+    "moves_count": 42,
+    "acpl": 120.0,
+    "final_elo": 1220,
+    "result": "loss",
+    "blunders": 6
+  },
+  {
+    "game_id": 14,
+    "moves_count": 65,
+    "acpl": 140.0,
+    "final_elo": 1030,
+    "result": "loss",
+    "blunders": 10
+  },
+  {
+    "game_id": 15,
+    "moves_count": 70,
+    "acpl": 160.0,
+    "final_elo": 840,
+    "result": "loss",
+    "blunders": 14
+  },
+  {
+    "game_id": 16,
+    "moves_count": 79,
+    "acpl": 140.0,
+    "final_elo": 1030,
+    "result": "loss",
+    "blunders": 10
+  },
+  {
+    "game_id": 17,
+    "moves_count": 10,
+    "acpl": 2.8,
+    "game_elo": 2412,
+    "final_elo": 2412,
+    "cumulative_elo": 1376,
+    "accuracy": 98.9,
+    "blunders": 0,
+    "mistakes": 0,
+    "inaccuracies": 0,
+    "best_moves": 5,
+    "result": "win",
+    "delta_elo": 1382
+  },
+  {
+    "game_id": 18,
+    "moves_count": 62,
+    "acpl": 75.8,
+    "game_elo": 1640,
+    "final_elo": 1640,
+    "cumulative_elo": 1442,
+    "accuracy": 73.9,
+    "blunders": 9,
+    "mistakes": 8,
+    "inaccuracies": 4,
+    "best_moves": 10,
+    "result": "loss",
+    "delta_elo": -772
+  },
+  {
+    "game_id": 19,
+    "moves_count": 48,
+    "acpl": 96.2,
+    "game_elo": 1446,
+    "final_elo": 1446,
+    "cumulative_elo": 1443,
+    "accuracy": 68.0,
+    "blunders": 10,
+    "mistakes": 5,
+    "inaccuracies": 1,
+    "best_moves": 8,
+    "result": "loss",
+    "delta_elo": -194
+  },
+  {
+    "game_id": 20,
+    "moves_count": 50,
+    "acpl": 72.9,
+    "game_elo": 1667,
+    "final_elo": 1667,
+    "cumulative_elo": 1499,
+    "accuracy": 74.7,
+    "blunders": 8,
+    "mistakes": 2,
+    "inaccuracies": 4,
+    "best_moves": 11,
+    "result": "loss",
+    "delta_elo": 221
+  },
+  {
+    "game_id": 21,
+    "moves_count": 1,
+    "acpl": 50.0,
+    "game_elo": 1985,
+    "final_elo": 1985,
+    "cumulative_elo": 1620,
+    "accuracy": 81.9,
+    "blunders": 0,
+    "mistakes": 0,
+    "inaccuracies": 0,
+    "best_moves": 0,
+    "result": "win",
+    "delta_elo": 318
+  },
+  {
+    "game_id": 22,
+    "moves_count": 54,
+    "acpl": 66.7,
+    "game_elo": 1726,
+    "final_elo": 1726,
+    "cumulative_elo": 1646,
+    "accuracy": 76.6,
+    "blunders": 8,
+    "mistakes": 3,
+    "inaccuracies": 9,
+    "best_moves": 7,
+    "result": "loss",
+    "delta_elo": -259
+  },
+  {
+    "game_id": 23,
+    "moves_count": 39,
+    "acpl": 29.8,
+    "game_elo": 2077,
+    "final_elo": 2077,
+    "cumulative_elo": 1754,
+    "accuracy": 88.8,
+    "blunders": 2,
+    "mistakes": 1,
+    "inaccuracies": 7,
+    "best_moves": 10,
+    "result": "loss",
+    "delta_elo": 351
+  }
+]

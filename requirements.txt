@@ -1,0 +1,11 @@
+torch>=2.0
+onnx
+onnxruntime
+python-chess
+fastapi
+uvicorn[standard]
+pandas
+numpy
+pydantic
+zstandard
+requests

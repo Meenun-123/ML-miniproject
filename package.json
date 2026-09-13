@@ -1,0 +1,9 @@
+{
+  "name": "chess-mate-vision-root",
+  "version": "1.0.0",
+  "description": "Chess Mate Vision - Tactical Pattern Recognition & Sparring Arena",
+  "scripts": {
+    "start": "./run.sh",
+    "dev": "./run.sh"
+  }
+}
