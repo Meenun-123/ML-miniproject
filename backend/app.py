@@ -334,6 +334,79 @@ def save_match_history(history: list[dict]) -> None:
         print(f"⚠️ Error saving match history to {MATCH_HISTORY_FILE}: {e}")
 
 
+# Missed Tactics Disk-Backed Persistence (JSON for inspection, CSV for fine-tuning)
+MISSED_TACTICS_FILE = PROJECT_ROOT / "data" / "missed_tactics.json"
+MISSED_TACTICS_CSV = PROJECT_ROOT / "data" / "missed_tactics.csv"
+
+
+def load_missed_tactics() -> dict:
+    """Loads all missed tactics and provides summary metrics."""
+    if not MISSED_TACTICS_FILE.exists():
+        return {"total_games": 0, "total_missed_tactics": 0, "games": []}
+    try:
+        with open(MISSED_TACTICS_FILE, "r", encoding="utf-8") as f:
+            games = json.load(f)
+            if not isinstance(games, list):
+                games = []
+            total_tactics = sum(g.get("count", len(g.get("tactics", []))) for g in games)
+            return {
+                "total_games": len(games),
+                "total_missed_tactics": total_tactics,
+                "games": games,
+            }
+    except Exception as e:
+        logger.warning(f"Error reading missed tactics file: {e}")
+        return {"total_games": 0, "total_missed_tactics": 0, "games": []}
+
+
+def save_missed_tactics(game_id: int, tactics: list[dict]) -> None:
+    """Saves missed tactics to both JSON and CSV files for review and model retraining."""
+    if not tactics:
+        return
+    try:
+        MISSED_TACTICS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        # 1. Update JSON
+        existing_games = []
+        if MISSED_TACTICS_FILE.exists():
+            try:
+                with open(MISSED_TACTICS_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        existing_games = data
+            except Exception:
+                existing_games = []
+
+        game_entry = {
+            "game_id": game_id,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "count": len(tactics),
+            "tactics": tactics,
+        }
+        existing_games.append(game_entry)
+        with open(MISSED_TACTICS_FILE, "w", encoding="utf-8") as f:
+            json.dump(existing_games, f, indent=2, ensure_ascii=False)
+
+        # 2. Update CSV for ML training / fine-tuning
+        csv_header = not MISSED_TACTICS_CSV.exists()
+        with open(MISSED_TACTICS_CSV, "a", encoding="utf-8") as f:
+            if csv_header:
+                f.write("PuzzleId,FEN,Moves,DropCp,ModelMove,Confidence,GameId,Ply,TacticType\n")
+            for t in tactics:
+                puzzle_id = t.get("puzzle_id", f"game_{game_id}_ply_{t.get('ply', 1)}")
+                fen = t.get("fen", "")
+                moves = t.get("best_move_uci", "")
+                drop_cp = t.get("eval_drop_cp", 0.0)
+                model_move = t.get("model_move_uci", "")
+                conf = t.get("confidence", 0.5)
+                ply = t.get("ply", 1)
+                tactic_type = t.get("tactic_type", "Tactical Blunder")
+                f.write(f'{puzzle_id},"{fen}","{moves}",{drop_cp},"{model_move}",{conf:.4f},{game_id},{ply},"{tactic_type}"\n')
+
+        logger.info(f"Successfully saved {len(tactics)} missed tactics from Game {game_id} to disk.")
+    except Exception as e:
+        logger.warning(f"Failed to save missed tactics: {e}")
+
+
 model_stats = {
     "estimated_elo": 1260,
     "recent_cpl": [68.4, 86.1, 82.5],
@@ -425,6 +498,9 @@ async def evaluate_full_game(req: EvaluateFullGameRequest):
     mistake_count = 0
     blunder_count = 0
 
+    game_missed_tactics: list[dict] = []
+    current_game_id = len(load_match_history()) + 1
+
     limit = chess.engine.Limit(depth=12, time=0.12)
 
     for san_move in req.pgn_moves:
@@ -436,6 +512,8 @@ async def evaluate_full_game(req: EvaluateFullGameRequest):
 
         is_model_turn = board.turn == model_color_chess
         if is_model_turn:
+            fen_before = board.fen()
+            ply_number = len(board.move_stack) + 1
             try:
                 # 1. Query Stockfish BEFORE model move (from model's POV)
                 info_before = engine.analyse(board, limit)
@@ -443,6 +521,7 @@ async def evaluate_full_game(req: EvaluateFullGameRequest):
                 score_before = (
                     score_before_obj.score(mate_score=10000) or 0
                 )
+                best_move_stockfish = info_before.get("pv", [None])[0]
 
                 # 2. Push model move
                 board.push(move)
@@ -467,6 +546,42 @@ async def evaluate_full_game(req: EvaluateFullGameRequest):
                     mistake_count += 1
                 else:
                     blunder_count += 1
+
+                # Missed Tactic Detection:
+                # Triggers when eval drop >= 75 cp or when a winning checkmate was missed
+                is_missed_mate = (score_before_obj.is_mate() and score_before > 0 and not (score_after_obj.is_mate() and score_after > 0))
+                if (raw_cpl >= 75.0 or is_missed_mate) and best_move_stockfish and best_move_stockfish != move:
+                    test_b = chess.Board(fen_before)
+                    best_san = test_b.san(best_move_stockfish)
+                    model_san = test_b.san(move)
+
+                    if is_missed_mate:
+                        tactic_type = "Missed Forced Checkmate"
+                    elif test_b.is_capture(best_move_stockfish):
+                        tactic_type = "Missed Winning Capture"
+                    elif test_b.gives_check(best_move_stockfish):
+                        tactic_type = "Missed Tactical Check"
+                    elif raw_cpl >= 200.0:
+                        tactic_type = "Severe Tactical Blunder"
+                    else:
+                        tactic_type = "Missed Tactical Opportunity"
+
+                    tactic_entry = {
+                        "puzzle_id": f"game_{current_game_id}_ply_{ply_number}",
+                        "fen": fen_before,
+                        "ply": ply_number,
+                        "model_move_uci": move.uci(),
+                        "model_move_san": model_san,
+                        "best_move_uci": best_move_stockfish.uci(),
+                        "best_move_san": best_san,
+                        "eval_drop_cp": round(raw_cpl, 1),
+                        "score_before": score_before,
+                        "score_after": score_after,
+                        "tactic_type": tactic_type,
+                        "description": f"Ply {ply_number}: Model played {model_san} (eval drop: -{raw_cpl:.0f} cp). Stockfish recommended {best_san}.",
+                    }
+                    game_missed_tactics.append(tactic_entry)
+
             except Exception as e:
                 logger.warning(f"Error analyzing move '{san_move}': {e}")
                 board.push(move)
@@ -511,10 +626,14 @@ async def evaluate_full_game(req: EvaluateFullGameRequest):
         "best_moves": best_count,
         "result": req.result,
         "delta_elo": delta_elo,
+        "missed_tactics_count": len(game_missed_tactics),
     }
 
     history.append(record)
     save_match_history(history)
+
+    # Persist all missed tactics to JSON and CSV
+    save_missed_tactics(record["game_id"], game_missed_tactics)
 
     # Update live backend stats
     model_stats["estimated_elo"] = new_cumulative_elo
@@ -528,7 +647,16 @@ async def evaluate_full_game(req: EvaluateFullGameRequest):
         "status": "ok",
         "record": record,
         "history": history,
+        "missed_tactics": game_missed_tactics,
+        "missed_tactics_count": len(game_missed_tactics),
     }
+
+
+@app.get("/missed-tactics")
+def get_missed_tactics_endpoint():
+    """Returns all recorded missed tactics for inspection and dashboard analysis."""
+    return load_missed_tactics()
+
 
 
 @app.get("/telemetry-history")
@@ -1553,7 +1681,7 @@ def search_alphabeta(
     if board.is_game_over() or board.can_claim_threefold_repetition() or board.is_repetition(3):
         return 0.0, [], "tenacious_defense"
     if depth <= 0:
-        q_val = quiescence_search(board, alpha, beta, depth=0, max_q_depth=6, ply=ply, deadline=deadline)
+        q_val = quiescence_search(board, alpha, beta, depth=0, max_q_depth=3, ply=ply, deadline=deadline)
         _, mode = evaluate_board_hybrid(board, ply=ply)
         return q_val, [], mode
 
@@ -1800,13 +1928,76 @@ def predict_move_internal(
 
     # 2. Minimax Tactical Search with Opponent Refutation (Depth 2-4 with LMR, NMP & Check Extensions)
     if use_search and search_depth >= 2 and not board.is_game_over():
-        # Hard Safety Clamp: Never attempt raw depth > 4 in Python to prevent combinatorial freeze
-        safe_depth = min(max(search_depth, 2), 4)
-        # Search Time Budget: 1000ms cap to guarantee snappy UX and prevent 504 gateway timeouts
-        search_deadline = time.time() + 1.00
-        search_score, search_pv, _ = search_alphabeta(
-            board, depth=safe_depth, alpha=-float("inf"), beta=float("inf"), ply=0, deadline=search_deadline
-        )
+        # Confidence-Driven Iterative Deepening Search:
+        # Think as long as needed until reaching >= 80% confidence,
+        # with an absolute hard cap of 10 seconds to prevent stalling.
+        CONFIDENCE_TARGET = 0.80
+        HARD_TIME_CAP = 10.0  # Max thinking time in seconds (per user specification)
+        overall_start = time.time()
+        hard_deadline = overall_start + HARD_TIME_CAP
+
+        search_score = 0.0
+        search_pv = []
+        best_confidence = 0.0
+        eval_mode = root_eval_mode
+
+        legal_moves_list = list(board.legal_moves)
+        max_search_depth = 1 if len(legal_moves_list) <= 1 else 6
+
+        for current_depth in range(1, max_search_depth + 1):
+            elapsed = time.time() - overall_start
+            remaining = hard_deadline - time.time()
+            if remaining <= 0.2:
+                break
+
+            # Stop early if confident >= 80% and completed at least depth 2
+            if current_depth > 2:
+                if best_confidence >= CONFIDENCE_TARGET:
+                    logger.info(
+                        f"Target confidence {CONFIDENCE_TARGET:.0%} reached ({best_confidence:.1%}) "
+                        f"at depth {current_depth-1} in {elapsed:.2f}s, playing move early."
+                    )
+                    break
+                if abs(search_score) >= 9.0:
+                    logger.info(f"Decisive terminal line found at depth {current_depth-1}, stopping search early.")
+                    break
+                # If remaining time is very low, do not start a whole new deeper ply
+                if remaining < 0.6:
+                    break
+
+            try:
+                cur_score, cur_pv, cur_mode = search_alphabeta(
+                    board, depth=current_depth, alpha=-float("inf"), beta=float("inf"), ply=0, deadline=hard_deadline
+                )
+                if cur_pv and cur_pv[0] in board.legal_moves:
+                    search_score = cur_score
+                    search_pv = cur_pv
+                    eval_mode = cur_mode
+
+                    probs_check, _ = get_neural_policy_and_value(board)
+                    cm_check = real_move_to_canonical(search_pv[0], is_black)
+                    pol_prob = probs_check[encode_move(cm_check)].item()
+
+                    # Dynamic confidence: blend policy prior with search verification depth
+                    depth_bonus = (current_depth - 1) * 0.10
+                    if search_score >= 0.50:
+                        best_confidence = min(0.99, pol_prob + depth_bonus + 0.15)
+                    elif search_score >= 0.0:
+                        best_confidence = min(0.95, pol_prob + depth_bonus)
+                    else:
+                        best_confidence = max(pol_prob, 0.35 + depth_bonus)
+
+                    elapsed = time.time() - overall_start
+                    logger.info(
+                        f"Iterative Deepening depth {current_depth}: move={board.san(search_pv[0])}, "
+                        f"score={search_score:+.2f}, confidence={best_confidence:.1%}, elapsed={elapsed:.2f}s"
+                    )
+            except SearchTimeout:
+                logger.info(
+                    f"Search deadline (10.0s) reached during depth {current_depth} "
+                    f"({time.time() - overall_start:.2f}s). Retaining best move from completed depth {current_depth-1}."
+                )
+                break
         eval_mode = "tactical_strike" if search_score >= 8.0 else root_eval_mode
         if search_pv and search_pv[0] in board.legal_moves:
             search_move = search_pv[0]
