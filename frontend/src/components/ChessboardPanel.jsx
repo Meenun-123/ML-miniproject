@@ -25,6 +25,7 @@ const ChessboardPanel = ({
   mode = 'auto',
   defenderColor = 'b',
   modelColor = 'w',
+  userColor = 'w',
   isMachineThinking = false,
   pliesSurvived = null,
   banner = null
@@ -57,7 +58,7 @@ const ChessboardPanel = ({
 
   return (
     <div 
-      id="board-outer-container"
+      id="board-outer-container" 
       className="w-full max-w-[min(92vw,620px)] bg-neutral-900/90 border border-neutral-800/80 rounded-2xl shadow-2xl p-3.5 sm:p-5 flex flex-col items-center relative transition-all"
     >
       <TurnStateHUD 
@@ -67,6 +68,7 @@ const ChessboardPanel = ({
         mode={mode}
         defenderColor={defenderColor}
         modelColor={modelColor}
+        userColor={userColor}
         isMachineThinking={isMachineThinking}
         pliesSurvived={pliesSurvived}
       />

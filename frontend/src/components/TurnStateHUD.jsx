@@ -1,5 +1,5 @@
 import React from 'react';
-import { Loader2, Shield, Cpu, AlertTriangle, Zap, BrainCircuit } from 'lucide-react';
+import { Loader2, Shield, Cpu, AlertTriangle, Zap, BrainCircuit, User } from 'lucide-react';
 
 const TurnStateHUD = ({
   turn = 'w',
@@ -8,11 +8,12 @@ const TurnStateHUD = ({
   mode = 'auto',
   defenderColor = 'b',
   modelColor = 'w',
+  userColor = 'w',
   isMachineThinking = false,
   pliesSurvived = null
 }) => {
   const isWhite = turn === 'w';
-  const isUserTurn = mode === 'defender' && turn === defenderColor;
+  const isUserTurn = mode === 'defender' ? turn === defenderColor : mode === 'user_vs_engine' ? turn === userColor : false;
   const isEngineTurn = mode === 'defender' ? turn !== defenderColor : true;
   const isModelTurnInSpectator = mode === 'spectator' && turn === modelColor;
 
@@ -43,7 +44,19 @@ const TurnStateHUD = ({
           <span className="text-slate-600 text-xs font-mono">•</span>
           
           {/* Who is playing */}
-          {mode === 'defender' ? (
+          {mode === 'user_vs_engine' ? (
+            isUserTurn ? (
+              <span className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+                <User className="w-3 h-3 text-cyan-400" />
+                You ({turn === 'w' ? 'White' : 'Black'})
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                <BrainCircuit className="w-3 h-3 text-emerald-400" />
+                SE-ResNet-8 ({turn === 'w' ? 'White' : 'Black'})
+              </span>
+            )
+          ) : mode === 'defender' ? (
             isUserTurn ? (
               <span className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
                 <Shield className="w-3 h-3 text-cyan-400" />
@@ -75,6 +88,7 @@ const TurnStateHUD = ({
           )}
         </div>
       </div>
+
 
       {/* Right: Tactical Tags */}
       <div className="flex items-center gap-2">

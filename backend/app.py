@@ -243,6 +243,8 @@ class EvaluateFullGameRequest(BaseModel):
     pgn_moves: list[str]
     model_color: str = "white"
     result: str = "draw"
+    user_color: str | None = None
+    save_to_history: bool = True
 
 
 class PredictResponse(BaseModel):
@@ -471,8 +473,9 @@ async def record_game_stats(data: dict):
 async def evaluate_full_game(req: EvaluateFullGameRequest):
     """
     Full-game review engine powered by Stockfish at depth 12:
-    Replays entire SAN move sequence, calculates CPL and accuracy for every model move,
-    derives game Elo and cumulative lifetime Elo, and persists match record to disk.
+    Replays entire SAN move sequence, calculates CPL, accuracy, performance Elo,
+    blunders, and missed tactics for BOTH players (User and Engine).
+    Persists match record and returns comprehensive dual-player analytics.
     """
     engine = get_stockfish_engine()
     if engine is None:
@@ -491,112 +494,215 @@ async def evaluate_full_game(req: EvaluateFullGameRequest):
     model_color_chess = (
         chess.WHITE if req.model_color.lower() in ("white", "w") else chess.BLACK
     )
+    if req.user_color:
+        user_color_chess = (
+            chess.WHITE if req.user_color.lower() in ("white", "w") else chess.BLACK
+        )
+    else:
+        user_color_chess = not model_color_chess
 
-    model_cpls: list[float] = []
-    best_count = 0
-    inaccuracy_count = 0
-    mistake_count = 0
-    blunder_count = 0
+    stats_by_color = {
+        chess.WHITE: {
+            "cpls": [],
+            "best_count": 0,
+            "inaccuracy_count": 0,
+            "mistake_count": 0,
+            "blunder_count": 0,
+            "missed_tactics": [],
+        },
+        chess.BLACK: {
+            "cpls": [],
+            "best_count": 0,
+            "inaccuracy_count": 0,
+            "mistake_count": 0,
+            "blunder_count": 0,
+            "missed_tactics": [],
+        },
+    }
 
+    eval_history: list[dict] = []
     game_missed_tactics: list[dict] = []
     current_game_id = len(load_match_history()) + 1
 
-    limit = chess.engine.Limit(depth=12, time=0.12)
+    limit = chess.engine.Limit(depth=12, time=0.10)
 
-    for san_move in req.pgn_moves:
+    # Initial evaluation at starting position (White POV)
+    try:
+        info_initial = engine.analyse(board, limit)
+        curr_score_white_obj = info_initial["score"].pov(chess.WHITE)
+        curr_score_white = float(curr_score_white_obj.score(mate_score=10000) or 0)
+        curr_best_move = info_initial.get("pv", [None])[0]
+    except Exception as e:
+        logger.warning(f"Initial Stockfish eval error: {e}")
+        curr_score_white = 20.0
+        curr_best_move = None
+
+    for san_or_uci in req.pgn_moves:
+        if not san_or_uci or not isinstance(san_or_uci, str):
+            continue
         try:
-            move = board.parse_san(san_move)
-        except Exception as e:
-            logger.warning(f"Skipping invalid SAN move '{san_move}': {e}")
-            break
-
-        is_model_turn = board.turn == model_color_chess
-        if is_model_turn:
-            fen_before = board.fen()
-            ply_number = len(board.move_stack) + 1
+            move = board.parse_san(san_or_uci)
+            mover_san = san_or_uci
+        except Exception:
             try:
-                # 1. Query Stockfish BEFORE model move (from model's POV)
-                info_before = engine.analyse(board, limit)
-                score_before_obj = info_before["score"].pov(model_color_chess)
-                score_before = (
-                    score_before_obj.score(mate_score=10000) or 0
-                )
-                best_move_stockfish = info_before.get("pv", [None])[0]
+                move = chess.Move.from_uci(san_or_uci)
+                if move not in board.legal_moves:
+                    raise ValueError(f"Move {san_or_uci} is not legal in current position")
+                mover_san = board.san(move)
+            except Exception as e2:
+                logger.warning(f"Skipping invalid move '{san_or_uci}': {e2}")
+                break
 
-                # 2. Push model move
-                board.push(move)
+        mover_color = board.turn
+        fen_before = board.fen()
+        ply_number = len(board.move_stack) + 1
 
-                # 3. Query Stockfish AFTER model move (from model's POV)
-                info_after = engine.analyse(board, limit)
-                score_after_obj = info_after["score"].pov(model_color_chess)
-                score_after = (
-                    score_after_obj.score(mate_score=10000) or 0
-                )
+        score_before = curr_score_white if mover_color == chess.WHITE else -curr_score_white
+        best_move_stockfish = curr_best_move
 
-                # Centipawn loss (capped at 250 cp to prevent terminal mate swings from exploding ACPL)
-                raw_cpl = max(0.0, float(score_before - score_after))
-                cpl = min(raw_cpl, 250.0)
-                model_cpls.append(cpl)
+        # Push move
+        board.push(move)
 
-                if cpl < 15.0:
-                    best_count += 1
-                elif cpl < 50.0:
-                    inaccuracy_count += 1
-                elif cpl < 100.0:
-                    mistake_count += 1
-                else:
-                    blunder_count += 1
+        # Stockfish analysis after the move
+        try:
+            info_after = engine.analyse(board, limit)
+            score_after_white_obj = info_after["score"].pov(chess.WHITE)
+            score_after_white = float(score_after_white_obj.score(mate_score=10000) or 0)
+            curr_best_move = info_after.get("pv", [None])[0]
+        except Exception as e:
+            logger.warning(f"Error evaluating ply {ply_number}: {e}")
+            score_after_white = curr_score_white
+            curr_best_move = None
 
-                # Missed Tactic Detection:
-                # Triggers when eval drop >= 75 cp or when a winning checkmate was missed
-                is_missed_mate = (score_before_obj.is_mate() and score_before > 0 and not (score_after_obj.is_mate() and score_after > 0))
-                if (raw_cpl >= 75.0 or is_missed_mate) and best_move_stockfish and best_move_stockfish != move:
-                    test_b = chess.Board(fen_before)
-                    best_san = test_b.san(best_move_stockfish)
-                    model_san = test_b.san(move)
+        score_after = score_after_white if mover_color == chess.WHITE else -score_after_white
+        curr_score_white = score_after_white
 
-                    if is_missed_mate:
-                        tactic_type = "Missed Forced Checkmate"
-                    elif test_b.is_capture(best_move_stockfish):
-                        tactic_type = "Missed Winning Capture"
-                    elif test_b.gives_check(best_move_stockfish):
-                        tactic_type = "Missed Tactical Check"
-                    elif raw_cpl >= 200.0:
-                        tactic_type = "Severe Tactical Blunder"
-                    else:
-                        tactic_type = "Missed Tactical Opportunity"
+        # Centipawn loss (capped at 250 cp)
+        raw_cpl = max(0.0, float(score_before - score_after))
+        cpl = min(raw_cpl, 250.0)
 
-                    tactic_entry = {
-                        "puzzle_id": f"game_{current_game_id}_ply_{ply_number}",
-                        "fen": fen_before,
-                        "ply": ply_number,
-                        "model_move_uci": move.uci(),
-                        "model_move_san": model_san,
-                        "best_move_uci": best_move_stockfish.uci(),
-                        "best_move_san": best_san,
-                        "eval_drop_cp": round(raw_cpl, 1),
-                        "score_before": score_before,
-                        "score_after": score_after,
-                        "tactic_type": tactic_type,
-                        "description": f"Ply {ply_number}: Model played {model_san} (eval drop: -{raw_cpl:.0f} cp). Stockfish recommended {best_san}.",
-                    }
-                    game_missed_tactics.append(tactic_entry)
+        color_stats = stats_by_color[mover_color]
+        color_stats["cpls"].append(cpl)
 
-            except Exception as e:
-                logger.warning(f"Error analyzing move '{san_move}': {e}")
-                board.push(move)
+        if cpl < 15.0:
+            color_stats["best_count"] += 1
+        elif cpl < 50.0:
+            color_stats["inaccuracy_count"] += 1
+        elif cpl < 100.0:
+            color_stats["mistake_count"] += 1
         else:
-            board.push(move)
+            color_stats["blunder_count"] += 1
 
-    # Compute overall game metrics
-    game_acpl = float(np.mean(model_cpls)) if model_cpls else 50.0
-    game_accuracy = float(np.clip(100.0 * np.exp(-0.004 * game_acpl), 0.0, 100.0))
+        eval_history.append({
+            "ply": ply_number,
+            "san": mover_san,
+            "uci": move.uci(),
+            "mover": "white" if mover_color == chess.WHITE else "black",
+            "eval_cp": round(score_after_white, 1),
+            "cpl": round(cpl, 1),
+        })
 
-    # Smooth, realistic Elo mapping
-    estimated_game_elo = estimate_performance_elo(game_acpl, accuracy=game_accuracy, result=req.result)
+        # Missed Tactic Detection:
+        # Eval drop >= 75 cp or missed mate when Stockfish had a distinct better move
+        is_missed_mate = (score_before >= 9000 and score_after < 9000)
+        if (raw_cpl >= 75.0 or is_missed_mate) and best_move_stockfish and best_move_stockfish != move:
+            test_b = chess.Board(fen_before)
+            try:
+                best_san = test_b.san(best_move_stockfish)
+            except Exception:
+                best_san = best_move_stockfish.uci()
 
-    # Lifetime Cumulative Rolling Elo
+            if is_missed_mate:
+                tactic_type = "Missed Forced Checkmate"
+            elif test_b.is_capture(best_move_stockfish):
+                tactic_type = "Missed Winning Capture"
+            elif test_b.gives_check(best_move_stockfish):
+                tactic_type = "Missed Tactical Check"
+            elif raw_cpl >= 200.0:
+                tactic_type = "Severe Tactical Blunder"
+            else:
+                tactic_type = "Missed Tactical Opportunity"
+
+            is_user = (mover_color == user_color_chess)
+            player_label = "You" if is_user else "SE-ResNet-8"
+            tactic_entry = {
+                "puzzle_id": f"game_{current_game_id}_ply_{ply_number}",
+                "fen": fen_before,
+                "ply": ply_number,
+                "player": "user" if is_user else "engine",
+                "player_color": "white" if mover_color == chess.WHITE else "black",
+                "move_uci": move.uci(),
+                "move_san": mover_san,
+                "best_move_uci": best_move_stockfish.uci(),
+                "best_move_san": best_san,
+                "eval_drop_cp": round(raw_cpl, 1),
+                "score_before": round(score_before, 1),
+                "score_after": round(score_after, 1),
+                "tactic_type": tactic_type,
+                "description": f"Ply {ply_number} ({'White' if mover_color == chess.WHITE else 'Black'}): {player_label} played {mover_san} (eval drop: -{raw_cpl:.0f} cp). Stockfish recommended {best_san}.",
+            }
+            color_stats["missed_tactics"].append(tactic_entry)
+            game_missed_tactics.append(tactic_entry)
+
+    # Determine game outcomes for performance Elo calculation
+    res_lower = req.result.lower() if isinstance(req.result, str) else "draw"
+    is_in_progress = (res_lower in ("in_progress", "progress")) and not board.is_checkmate()
+    should_save = req.save_to_history and not is_in_progress
+
+    if board.is_checkmate():
+        winner = not board.turn
+        white_res = "win" if winner == chess.WHITE else "loss"
+        black_res = "loss" if winner == chess.WHITE else "win"
+    elif is_in_progress:
+        white_res = "in_progress"
+        black_res = "in_progress"
+    elif res_lower in ("draw", "stalemate"):
+        white_res = "draw"
+        black_res = "draw"
+    elif res_lower == "win":
+        white_res = "win" if model_color_chess == chess.WHITE else "loss"
+        black_res = "loss" if model_color_chess == chess.WHITE else "win"
+    elif res_lower == "loss":
+        white_res = "loss" if model_color_chess == chess.WHITE else "win"
+        black_res = "win" if model_color_chess == chess.WHITE else "loss"
+    else:
+        white_res = "draw"
+        black_res = "draw"
+
+    def build_player_metrics(color: chess.Color, side_name: str, result_str: str) -> dict:
+        s = stats_by_color[color]
+        cpls = s["cpls"]
+        acpl = float(np.mean(cpls)) if cpls else 45.0
+        accuracy = float(np.clip(100.0 * np.exp(-0.004 * acpl), 0.0, 100.0))
+        elo = estimate_performance_elo(acpl, accuracy=accuracy, result=result_str)
+        return {
+            "side": side_name,
+            "color": "white" if color == chess.WHITE else "black",
+            "moves_count": len(cpls),
+            "acpl": round(acpl, 1),
+            "accuracy": round(accuracy, 1),
+            "game_elo": elo,
+            "best_moves": s["best_count"],
+            "inaccuracies": s["inaccuracy_count"],
+            "mistakes": s["mistake_count"],
+            "blunders": s["blunder_count"],
+            "missed_tactics": s["missed_tactics"],
+            "missed_tactics_count": len(s["missed_tactics"]),
+            "result": result_str,
+        }
+
+    white_stats = build_player_metrics(chess.WHITE, "white", white_res)
+    black_stats = build_player_metrics(chess.BLACK, "black", black_res)
+
+    engine_stats = white_stats if model_color_chess == chess.WHITE else black_stats
+    user_stats = white_stats if user_color_chess == chess.WHITE else black_stats
+
+    # Model Performance & Lifetime Cumulative Rolling Elo
     history = load_match_history()
+    game_acpl = engine_stats["acpl"]
+    game_accuracy = engine_stats["accuracy"]
+    estimated_game_elo = engine_stats["game_elo"]
+
     if history:
         prev_cum = history[-1].get(
             "cumulative_elo", history[-1].get("final_elo", 1200)
@@ -620,28 +726,25 @@ async def evaluate_full_game(req: EvaluateFullGameRequest):
         "final_elo": estimated_game_elo,
         "cumulative_elo": new_cumulative_elo,
         "accuracy": round(game_accuracy, 1),
-        "blunders": blunder_count,
-        "mistakes": mistake_count,
-        "inaccuracies": inaccuracy_count,
-        "best_moves": best_count,
+        "blunders": engine_stats["blunders"],
+        "mistakes": engine_stats["mistakes"],
+        "inaccuracies": engine_stats["inaccuracies"],
+        "best_moves": engine_stats["best_moves"],
         "result": req.result,
         "delta_elo": delta_elo,
-        "missed_tactics_count": len(game_missed_tactics),
+        "missed_tactics_count": len(engine_stats["missed_tactics"]),
     }
 
-    history.append(record)
-    save_match_history(history)
-
-    # Persist all missed tactics to JSON and CSV
-    save_missed_tactics(record["game_id"], game_missed_tactics)
-
-    # Update live backend stats
-    model_stats["estimated_elo"] = new_cumulative_elo
-    if "recent_cpl" not in model_stats:
-        model_stats["recent_cpl"] = []
-    model_stats["recent_cpl"].append(game_acpl)
-    if len(model_stats["recent_cpl"]) > 30:
-        model_stats["recent_cpl"] = model_stats["recent_cpl"][-30:]
+    if should_save:
+        history.append(record)
+        save_match_history(history)
+        save_missed_tactics(record["game_id"], game_missed_tactics)
+        model_stats["estimated_elo"] = new_cumulative_elo
+        if "recent_cpl" not in model_stats:
+            model_stats["recent_cpl"] = []
+        model_stats["recent_cpl"].append(game_acpl)
+        if len(model_stats["recent_cpl"]) > 30:
+            model_stats["recent_cpl"] = model_stats["recent_cpl"][-30:]
 
     return {
         "status": "ok",
@@ -649,7 +752,14 @@ async def evaluate_full_game(req: EvaluateFullGameRequest):
         "history": history,
         "missed_tactics": game_missed_tactics,
         "missed_tactics_count": len(game_missed_tactics),
+        "user_stats": user_stats,
+        "engine_stats": engine_stats,
+        "white_stats": white_stats,
+        "black_stats": black_stats,
+        "eval_history": eval_history,
+        "is_in_progress": is_in_progress,
     }
+
 
 
 @app.get("/missed-tactics")
@@ -887,6 +997,86 @@ def is_square_safe(board: chess.Board, target_sq: chess.Square, color: bool, pie
     return len(friendly_defenders) >= len(enemy_attackers)
 
 
+def calculate_trade_delta(board: chess.Board, move: chess.Move) -> int:
+    """
+    Computes the net material points gained or lost if this move triggers an exchange on to_square.
+    Returns:
+        Positive value: winning trade (e.g. +300 for capturing clean minor piece).
+        0: equal trade.
+        Negative value: losing trade (e.g. -400 for trading Queen for Rook, or -200 for trading Knight for Pawn).
+    """
+    to_sq = move.to_square
+    from_sq = move.from_square
+    moving_p = board.piece_at(from_sq)
+    if not moving_p:
+        return 0
+
+    moving_val = PIECE_VALUES.get(moving_p.piece_type, 100)
+    captured_p = board.piece_at(to_sq)
+    captured_val = PIECE_VALUES.get(captured_p.piece_type, 100) if captured_p else 0
+    if board.is_en_passant(move):
+        captured_val = PIECE_VALUES[chess.PAWN]
+
+    color = board.turn
+    enemy = not color
+
+    opp_attackers = list(board.attackers(enemy, to_sq))
+    if not opp_attackers:
+        return captured_val
+
+    friendly_defenders = [sq for sq in board.attackers(color, to_sq) if sq != from_sq]
+    if not friendly_defenders:
+        return captured_val - moving_val
+
+    min_opp_val = min(
+        PIECE_VALUES.get(board.piece_at(sq).piece_type, 100)
+        for sq in opp_attackers
+        if board.piece_at(sq)
+    )
+
+    if moving_val > captured_val:
+        return captured_val - moving_val
+
+    if len(opp_attackers) > len(friendly_defenders) + 1:
+        return captured_val - moving_val
+    else:
+        return captured_val - min(moving_val, min_opp_val)
+
+
+def evaluate_piece_defensibility(board: chess.Board, color: bool) -> float:
+    """
+    Evaluates defensive coordination and piece defense:
+    - Rewards pieces defended by pawns (+10 cp) or other friendly pieces (+5 cp).
+    - Penalizes loose (undefended) pieces vulnerable to tactical exploitation.
+    """
+    score = 0.0
+    for sq in chess.SQUARES:
+        piece = board.piece_at(sq)
+        if piece and piece.color == color and piece.piece_type != chess.KING:
+            defenders = list(board.attackers(color, sq))
+            enemy_attackers = list(board.attackers(not color, sq))
+
+            pawn_defenders = [
+                d for d in defenders
+                if board.piece_at(d) and board.piece_at(d).piece_type == chess.PAWN
+            ]
+
+            if pawn_defenders:
+                score += 10.0  # Solid pawn shelter
+            elif defenders:
+                score += 5.0   # Piece-to-piece protection
+            elif not enemy_attackers:
+                # Loose (undefended) piece: vulnerable to double attacks!
+                if piece.piece_type in (chess.KNIGHT, chess.BISHOP):
+                    score -= 12.0
+                elif piece.piece_type == chess.ROOK:
+                    score -= 18.0
+                elif piece.piece_type == chess.QUEEN:
+                    score -= 25.0
+
+    return score
+
+
 def order_moves_with_defensive_awareness(
     board: chess.Board,
     legal_moves: list[chess.Move],
@@ -894,8 +1084,9 @@ def order_moves_with_defensive_awareness(
     tt_move: chess.Move | None = None,
 ) -> list[chess.Move]:
     """
-    Orders moves so that defensive retreats, interpositions, and counter-captures
-    for hanging pieces are scored at the very top of the search tree.
+    Orders moves so that defensive retreats, interpositions, sound trades,
+    and piece development are scored at the top, while blunders, negative trades,
+    and premature attacks are suppressed.
     """
     if not legal_moves:
         return []
@@ -905,6 +1096,17 @@ def order_moves_with_defensive_awareness(
     hanging_sqs = {h["square"]: h for h in hanging_pieces}
 
     scored_moves = []
+
+    # Count undeveloped minor pieces for opening harmony evaluation
+    back_minors = (
+        [chess.B1, chess.C1, chess.F1, chess.G1]
+        if color == chess.WHITE
+        else [chess.B8, chess.C8, chess.F8, chess.G8]
+    )
+    undeveloped_minors = [
+        sq for sq in back_minors
+        if board.piece_at(sq) and board.piece_at(sq).piece_type in (chess.KNIGHT, chess.BISHOP)
+    ]
 
     for move in legal_moves:
         if tt_move and move == tt_move:
@@ -944,35 +1146,73 @@ def order_moves_with_defensive_awareness(
                     score += 1.8 + (h["value"] / 200.0)
                     break
 
-        # 3. COUNTER-CAPTURE: Capturing an enemy piece
+        # 3. STATIC EXCHANGE EVALUATION & TRADES:
+        # "think about the piece points: how many points will it gain if it trades a piece.
+        # If the points imbalance is negative, then this is not a correct trade"
+        trade_delta = calculate_trade_delta(board, move)
+        gives_chk = board.gives_check(move)
+        opp_exp_after = 0.0
+        if gives_chk:
+            board.push(move)
+            opp_exp_after = evaluate_king_exposure(board, not color)
+            board.pop()
+
+        is_sound_king_hunt = (gives_chk and opp_exp_after >= 60.0 and len(undeveloped_minors) <= 1)
+
         if board.is_capture(move):
-            captured = board.piece_at(to_sq)
-            cap_val = PIECE_VALUES.get(captured.piece_type, 100) if captured else 100
-            is_defended = board.is_attacked_by(not color, to_sq)
-            if is_defended and moving_val > cap_val:
-                # Defended capture losing material (e.g. Minor takes defended Pawn)
-                # Only exempt if policy is very confident (>= 0.40) or king hunt check
-                if p_val >= 0.40 or (board.gives_check(move) and p_val >= 0.25):
-                    score += 1.5
+            if trade_delta < 0:
+                # Negative trade: losing points! e.g. trading Queen for Rook (-400) or Minor for Pawn (-200)
+                if is_sound_king_hunt:
+                    score += 2.0  # Sound King hunt sacrifice exception (e.g. Greek Gift Bxh7+)
                 else:
-                    score -= 3.0  # Bad/losing capture
+                    # Heavily penalize bad trades
+                    score -= 4.0 + (abs(trade_delta) / 75.0)
+            elif trade_delta > 0:
+                # Winning trade: net positive points!
+                score += 2.5 + (trade_delta / 80.0)
             else:
-                # MVV-LVA: Most Valuable Victim - Least Valuable Attacker
-                score += 2.0 + (cap_val - moving_val * 0.1) / 100.0
+                # Equal trade (e.g. Knight for Knight)
+                score += 1.5
 
         # 4. AVOID SUICIDE: Never step an unthreatened piece onto a square controlled by enemy pawns or undefended
         if from_sq not in hanging_sqs and not board.is_capture(move):
             if moving_piece and not is_square_safe(board, to_sq, color, moving_piece.piece_type):
-                # Do not penalize forcing checks that assault an exposed king
-                if not (board.gives_check(move) and evaluate_king_exposure(board, not color) >= 50.0):
+                # Do not penalize forcing checks that assault an exposed king with developed pieces
+                if not (gives_chk and is_sound_king_hunt):
                     score -= 4.0  # Heavily de-prioritize blundering a piece into attack
 
-        # 5. CHECKS & KING ASSAULT
-        if board.gives_check(move):
+        # 5. OPENING HARMONY: "Attack after developing all the pieces"
+        if board.fullmove_number <= 10:
+            # Reward developing minor pieces off back rank
+            if moving_piece and moving_piece.piece_type in (chess.KNIGHT, chess.BISHOP) and from_sq in back_minors:
+                score += 2.8
+            # Reward castling
+            if board.is_castling(move):
+                score += 3.5
+            # Penalize premature Queen attacks when minors are asleep
+            if moving_piece and moving_piece.piece_type == chess.QUEEN and len(undeveloped_minors) >= 2:
+                score -= 3.5
+            # Penalize edge pawn moves before piece development
+            if moving_piece and moving_piece.piece_type == chess.PAWN and chess.square_file(to_sq) in (0, 7) and len(undeveloped_minors) >= 2:
+                score -= 2.0
+            # Penalize premature sacrifices before development
+            if trade_delta < 0 and len(undeveloped_minors) >= 2:
+                score -= 4.0
+
+        # 6. WELL-DEFENDED PIECES: Reward moves landing on protected squares
+        if moving_piece and moving_piece.piece_type != chess.KING:
+            if is_square_safe(board, to_sq, color, moving_piece.piece_type):
+                defenders_to = list(board.attackers(color, to_sq))
+                if defenders_to:
+                    score += 0.6  # Piece stays well-defended
+
+        # 7. CHECKS & KING ASSAULT
+        if gives_chk:
             score += 1.0
-            opp_exp = evaluate_king_exposure(board, not color)
-            if opp_exp >= 45.0:
-                score += 1.5
+            if opp_exp_after >= 45.0 and trade_delta >= 0:
+                score += 2.0
+            elif is_sound_king_hunt:
+                score += 2.0
 
         scored_moves.append((score, move))
 
@@ -1484,6 +1724,20 @@ def evaluate_opening_concepts(board: chess.Board, ply: int) -> float:
                 # King remains uncastled on open/semi-open central files past ply 14
                 score -= 50.0 * mult
 
+        # 5. Attack Only After Developing All Pieces:
+        # "tell the model that attack after developing all the pieces"
+        undeveloped_count = 4 - minors_developed
+        queen_sqs = list(board.pieces(chess.QUEEN, color))
+        if queen_sqs and undeveloped_count >= 2:
+            q_sq = queen_sqs[0]
+            home_rank = 0 if color == chess.WHITE else 7
+            if chess.square_rank(q_sq) != home_rank:
+                score -= 30.0 * mult  # Penalize premature Queen outings before minor piece development
+
+        # Reward connecting the rooks / full development completion
+        if minors_developed == 4:
+            score += 25.0 * mult
+
     return score
 
 
@@ -1558,6 +1812,14 @@ def evaluate_board_hybrid(board: chess.Board, ply: int = 0) -> tuple[float, str]
         if mover_material_cp <= -90 and not is_compensated:
             final_score = min(final_score, mat_tanh)
 
+    # Defensive Solidity & Well-Defended Pieces:
+    # "tell the machine strongly that the pieces are well defended"
+    def_white = evaluate_piece_defensibility(board, chess.WHITE)
+    def_black = evaluate_piece_defensibility(board, chess.BLACK)
+    mover_def_mult = 1.0 if board.turn == chess.WHITE else -1.0
+    mover_def_cp = (def_white - def_black) * mover_def_mult
+    final_score += float(np.tanh(mover_def_cp / 300.0) * 0.15)
+
     # Hanging Piece Penalty & Under-Attack Adjustments:
     # 1. Did the player who just moved (not board.turn) leave any pieces hanging?
     last_moved_color = not board.turn
@@ -1620,18 +1882,6 @@ def quiescence_search(
             alpha = stand_pat
 
     BIG_DELTA = 0.95
-    if in_check:
-        moves_to_search = list(board.legal_moves)[:4]
-        if not moves_to_search:
-            return -10.0 - depth
-    else:
-        moves_to_search = [m for m in board.legal_moves if board.is_capture(m)]
-        if not moves_to_search:
-            return stand_pat
-
-    # Only delta-prune if not in check
-    if not in_check and stand_pat < alpha - BIG_DELTA:
-        return alpha
 
     def quiescence_move_score(m: chess.Move) -> int:
         victim = board.piece_at(m.to_square)
@@ -1640,7 +1890,26 @@ def quiescence_search(
         a_val = PIECE_VALUES.get(attacker.piece_type, 100) if attacker else 100
         return v_val * 10 - a_val
 
-    moves_to_search.sort(key=quiescence_move_score, reverse=True)
+    if in_check:
+        moves_to_search = list(board.legal_moves)
+        if not moves_to_search:
+            return -10.0 - depth
+        # Check evasions: prioritize capturing checking pieces first!
+        moves_to_search.sort(
+            key=lambda m: (1 if board.is_capture(m) else 0, quiescence_move_score(m)),
+            reverse=True
+        )
+        moves_to_search = moves_to_search[:6]
+    else:
+        moves_to_search = [m for m in board.legal_moves if board.is_capture(m)]
+        if not moves_to_search:
+            return stand_pat
+
+        # Only delta-prune if not in check
+        if stand_pat < alpha - BIG_DELTA:
+            return alpha
+
+        moves_to_search.sort(key=quiescence_move_score, reverse=True)
 
     for move in moves_to_search[:5]:
         board.push(move)
@@ -1769,6 +2038,7 @@ def search_alphabeta(
 
         gives_check = board.gives_check(move)
         is_capture = piece_captured is not None or board.is_en_passant(move)
+        trade_delta = calculate_trade_delta(board, move)
 
         new_depth = depth - 1
         # Tactical Check Extension: Never cut off search when King is under direct assault!
@@ -1810,7 +2080,7 @@ def search_alphabeta(
 
                 # Opponent king exposure after our move
                 opp_king_exposure = evaluate_king_exposure(board, board.turn)
-                has_king_assault = opp_king_exposure >= 55.0
+                has_king_assault = gives_check and (opp_king_exposure >= 55.0 or score >= 1.0)
 
                 # 1. Did we put an unthreatened piece on a square attacked by an enemy pawn?
                 pawn_attackers = [
@@ -1851,8 +2121,27 @@ def search_alphabeta(
                 hanging_left = get_hanging_pieces(board, not board.turn)
                 if hanging_left:
                     worst_loss = hanging_left[0]["value"]
-                    if not gives_check and not has_king_assault:
-                        score -= (worst_loss / 100.0) * 0.9
+                    if not has_king_assault:
+                        score -= (worst_loss / 100.0) * 1.5
+
+                # 6. Static Exchange Evaluation (Trade Point Imbalance):
+                # "think about the piece points: how many points will it gain if it trades a piece.
+                # If the points imbalance is negative, then tell the machine that this is not a correct trade"
+                if trade_delta < 0:
+                    if not (gives_check and (opp_king_exposure >= 50.0 or score >= 1.5)):
+                        # Enforce strict penalty for conceding negative trade points
+                        score -= (abs(trade_delta) / 100.0) * 0.9
+
+                # 7. Follow-Up Attack Verification (No empty checks):
+                # "start an attack if it has a follow-up attack to checkmate and defend"
+                if gives_check:
+                    has_followup = (opp_king_exposure >= 50.0 or score >= 0.50 or len(child_pv) >= 2)
+                    if not has_followup and score < 0.20:
+                        score -= 2.0  # Empty check with no follow-up
+
+            # Ensure non-checkmate tactical penalties do not masquerade as forced checkmates
+            if abs(score) < 9.5:
+                score = max(-6.0, min(6.0, score))
         except SearchTimeout:
             timed_out = True
             if ply > 0:
@@ -1958,7 +2247,7 @@ def predict_move_internal(
                         f"at depth {current_depth-1} in {elapsed:.2f}s, playing move early."
                     )
                     break
-                if abs(search_score) >= 9.0:
+                if abs(search_score) >= 9.8:
                     logger.info(f"Decisive terminal line found at depth {current_depth-1}, stopping search early.")
                     break
                 # If remaining time is very low, do not start a whole new deeper ply
@@ -1998,7 +2287,8 @@ def predict_move_internal(
                     f"({time.time() - overall_start:.2f}s). Retaining best move from completed depth {current_depth-1}."
                 )
                 break
-        eval_mode = "tactical_strike" if search_score >= 8.0 else root_eval_mode
+        is_mate_strike = (search_score >= 9.8 and any(m for m in search_pv if board.gives_check(m)))
+        eval_mode = "tactical_strike" if is_mate_strike else root_eval_mode
         if search_pv and search_pv[0] in board.legal_moves:
             search_move = search_pv[0]
             pv_san = []
@@ -2073,6 +2363,16 @@ def predict_move_internal(
                     rationale = "🛡️ Tenacious Defense: Complicating position, preventing passive simplification, and fighting for counterplay."
                 else:
                     rationale = "⚡ Tactical Refutation: Concrete calculated tactic with tactical refutation."
+            elif board.is_castling(search_move):
+                rationale = "🏰 Strategic Development: Securing the King and connecting rooks before launching attacks."
+                eval_mode = "strategic_development"
+            elif board.fullmove_number <= 10 and moved_p and moved_p.piece_type in (chess.KNIGHT, chess.BISHOP) and search_move.from_square in ([chess.B1, chess.C1, chess.F1, chess.G1] if board.turn == chess.WHITE else [chess.B8, chess.C8, chess.F8, chess.G8]):
+                p_name = chess.piece_name(moved_p.piece_type).title()
+                rationale = f"🏛️ Strategic Development: Activating {p_name} on {chess.square_name(search_move.to_square)} before commencing offensive operations."
+                eval_mode = "strategic_development"
+            elif calculate_trade_delta(board, search_move) > 0:
+                trade_d = calculate_trade_delta(board, search_move)
+                rationale = f"⚔️ Favorable Trade: Gaining net material (+{trade_d} cp) with {board.san(search_move)}."
             elif eval_mode == "strategic_development":
                 rationale = "🏛️ Strategic Development: Maintaining central pawn tension, harmonious piece coordination, and King safety."
             elif eval_mode == "tenacious_defense":

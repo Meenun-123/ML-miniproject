@@ -6,7 +6,9 @@ import SolveControls from './components/SolveControls';
 import DefenderPanel from './components/DefenderPanel';
 import SpectatorPanel from './components/SpectatorPanel';
 import TelemetryPanel from './components/TelemetryPanel';
-import { Bot, Shield, Swords, RotateCcw } from 'lucide-react';
+import UserVsEnginePanel from './components/UserVsEnginePanel';
+import GameReviewModal from './components/GameReviewModal';
+import { Bot, Shield, Swords, RotateCcw, UserCheck, Award } from 'lucide-react';
 import { 
   playMoveSound, 
   playCheckSound, 
@@ -104,6 +106,34 @@ function App() {
   const [isEvaluatingFullGame, setIsEvaluatingFullGame] = useState(false);
   const [latestReview, setLatestReview] = useState(null);
   const spectatorLoopRef = useRef(null);
+
+  // User vs AI Engine State
+  const [userVsEngineUserColor, setUserVsEngineUserColor] = useState('w'); // 'w' | 'b'
+  const [userVsEngineStatus, setUserVsEngineStatus] = useState('user_turn'); // 'user_turn' | 'engine_thinking' | 'game_over'
+  const [userVsEngineHistory, setUserVsEngineHistory] = useState([]);
+  const [userVsEngineLatestMove, setUserVsEngineLatestMove] = useState(null);
+  const [dualReviewData, setDualReviewData] = useState(null);
+  const [isEvaluatingDual, setIsEvaluatingDual] = useState(false);
+  const [showReviewModal, setShowReviewModal] = useState(false);
+  const [userVsEngineUseBook, setUserVsEngineUseBook] = useState(true);
+  const [userVsEngineUseSearch, setUserVsEngineUseSearch] = useState(true);
+  const [userVsEngineTemp, setUserVsEngineTemp] = useState(0.0);
+
+  const userVsEngineHistoryRef = useRef([]);
+  const userVsEngineStatusRef = useRef('user_turn');
+  const userVsEngineUserColorRef = useRef('w');
+
+  useEffect(() => {
+    userVsEngineHistoryRef.current = userVsEngineHistory;
+  }, [userVsEngineHistory]);
+
+  useEffect(() => {
+    userVsEngineStatusRef.current = userVsEngineStatus;
+  }, [userVsEngineStatus]);
+
+  useEffect(() => {
+    userVsEngineUserColorRef.current = userVsEngineUserColor;
+  }, [userVsEngineUserColor]);
 
   // Tactical Arrows & Telemetry
   const [arrows, setArrows] = useState([]);
@@ -299,6 +329,219 @@ function App() {
       console.error('Invalid FEN initialization:', e);
     }
   }, [triggerMachineTurn]);
+
+  // Trigger Stockfish Dual Full-Game Evaluation
+  const runDualReview = useCallback(async (historyOverrideOrGame = null, result = 'draw') => {
+    let rawMoves = [];
+    if (Array.isArray(historyOverrideOrGame) && historyOverrideOrGame.length > 0) {
+      rawMoves = historyOverrideOrGame;
+    } else if (historyOverrideOrGame && typeof historyOverrideOrGame.history === 'function') {
+      const hist = historyOverrideOrGame.history();
+      if (hist && hist.length > 1) {
+        rawMoves = hist;
+      }
+    }
+
+    if (!rawMoves || rawMoves.length === 0) {
+      rawMoves = userVsEngineHistoryRef.current || [];
+    }
+
+    const pgnMoves = rawMoves.map(item => {
+      if (typeof item === 'string') return item;
+      return item?.san || null;
+    }).filter(Boolean);
+
+    if (!pgnMoves || pgnMoves.length === 0) {
+      console.warn("Dual review: no moves to evaluate.");
+      return;
+    }
+
+    const activeUserColor = userVsEngineUserColorRef.current;
+    const currentStatus = userVsEngineStatusRef.current;
+    const isGameOver = currentStatus === 'game_over' || ['win', 'loss'].includes(result);
+
+    setIsEvaluatingDual(true);
+    try {
+      const modelColorStr = activeUserColor === 'w' ? 'black' : 'white';
+      const userColorStr = activeUserColor === 'w' ? 'white' : 'black';
+      const res = await fetch(`${API_BASE}/evaluate-full-game`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pgn_moves: pgnMoves,
+          model_color: modelColorStr,
+          user_color: userColorStr,
+          result: isGameOver ? result : 'in_progress',
+          save_to_history: isGameOver
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP error ${res.status}`);
+      }
+      const data = await res.json();
+      setDualReviewData(data);
+      setShowReviewModal(true);
+    } catch (e) {
+      console.error("Dual review evaluation failed:", e);
+    } finally {
+      setIsEvaluatingDual(false);
+    }
+  }, []);
+
+  // Execute SE-ResNet Turn in User vs AI Engine Mode
+  const triggerUserVsEngineMachineTurn = useCallback(async (currentGame, currentHistory) => {
+    setUserVsEngineStatus('engine_thinking');
+    const delayPromise = new Promise(resolve => setTimeout(resolve, 300));
+
+    try {
+      const currentFen = currentGame.fen();
+      const fetchPromise = fetch(`${API_BASE}/predict-move`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fen: currentFen,
+          temperature: userVsEngineTemp,
+          ply: currentHistory.length,
+          use_book: userVsEngineUseBook,
+          use_search: userVsEngineUseSearch,
+          search_depth: 2
+        })
+      }).then(res => res.json());
+
+      const [data] = await Promise.all([fetchPromise, delayPromise]);
+      setInferenceTime(data.inference_time_ms);
+
+      if (!data.top_moves || data.top_moves.length === 0) {
+        if (currentGame.inCheck()) {
+          playVictorySound();
+          setUserVsEngineStatus('game_over');
+          setBanner({
+            type: 'victory',
+            emoji: '👑',
+            title: 'Checkmate Delivered!',
+            subtitle: 'SE-ResNet-8 has no legal moves under check.'
+          });
+          runDualReview(currentHistory, 'loss');
+        } else {
+          playVictorySound();
+          setUserVsEngineStatus('game_over');
+          setBanner({
+            type: 'victory',
+            emoji: '⚖️',
+            title: 'Stalemate',
+            subtitle: 'Position is drawn by stalemate.'
+          });
+          runDualReview(currentHistory, 'draw');
+        }
+        return;
+      }
+
+      const bestMove = data.top_moves[0];
+      const newGame = new Chess(currentGame.fen());
+      const moveResult = newGame.move({
+        from: bestMove.from_sq,
+        to: bestMove.to_sq,
+        promotion: bestMove.uci.length > 4 ? bestMove.uci[4] : 'q'
+      });
+
+      if (!moveResult) {
+        console.error("SE-ResNet predicted illegal move:", bestMove);
+        setUserVsEngineStatus('user_turn');
+        return;
+      }
+
+      const isCheck = newGame.inCheck();
+      const isMate = newGame.isCheckmate();
+      const isDraw = newGame.isDraw() || newGame.isStalemate();
+
+      if (isMate) playMateSound();
+      else if (isCheck) playCheckSound();
+      else playMoveSound();
+
+      setGame(newGame);
+      setFen(newGame.fen());
+      setArrows([[bestMove.from_sq, bestMove.to_sq, 'rgba(16, 185, 129, 0.9)']]);
+      setUserVsEngineLatestMove({
+        san: bestMove.san,
+        uci: bestMove.uci,
+        confidence: bestMove.confidence,
+        inference_ms: data.inference_time_ms,
+        tactical_rationale: data.tactical_rationale,
+        eval_mode: data.eval_mode,
+        is_book: data.is_book_move
+      });
+
+      const newHistory = [
+        ...currentHistory,
+        {
+          role: 'engine',
+          san: bestMove.san,
+          uci: bestMove.uci,
+          from_sq: bestMove.from_sq,
+          to_sq: bestMove.to_sq,
+          confidence: bestMove.confidence
+        }
+      ];
+      setUserVsEngineHistory(newHistory);
+      userVsEngineHistoryRef.current = newHistory;
+      setDualReviewData(null);
+
+      if (isMate) {
+        setUserVsEngineStatus('game_over');
+        setBanner({
+          type: 'checkmate',
+          emoji: '💥',
+          title: 'Checkmate Delivered!',
+          subtitle: `SE-ResNet-8 delivered checkmate in ${newHistory.length} plies.`
+        });
+        runDualReview(newHistory, 'win');
+      } else if (isDraw) {
+        playVictorySound();
+        setUserVsEngineStatus('game_over');
+        setBanner({
+          type: 'victory',
+          emoji: '⚖️',
+          title: 'Match Drawn',
+          subtitle: 'Game drawn by repetition or insufficient material.'
+        });
+        runDualReview(newHistory, 'draw');
+      } else {
+        setUserVsEngineStatus('user_turn');
+      }
+    } catch (err) {
+      console.error("Error executing SE-ResNet turn:", err);
+      setUserVsEngineStatus('user_turn');
+    }
+  }, [userVsEngineTemp, userVsEngineUseBook, userVsEngineUseSearch, runDualReview]);
+
+  // Initialize User vs AI Engine Session
+  const initUserVsEngineSession = useCallback((selectedColor = 'w') => {
+    try {
+      const cleanGame = new Chess('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');
+      setGame(cleanGame);
+      setFen(cleanGame.fen());
+      setUserVsEngineUserColor(selectedColor);
+      setBoardOrientation(selectedColor === 'w' ? 'white' : 'black');
+      setUserVsEngineHistory([]);
+      setUserVsEngineLatestMove(null);
+      setDualReviewData(null);
+      setShowReviewModal(false);
+      setBanner(null);
+      setArrows([]);
+      setSolution(null);
+      setCurrentStep(-1);
+      setIsPlaying(false);
+      if (playbackRef.current) clearInterval(playbackRef.current);
+
+      if (selectedColor === 'b') {
+        triggerUserVsEngineMachineTurn(cleanGame, []);
+      } else {
+        setUserVsEngineStatus('user_turn');
+      }
+    } catch (e) {
+      console.error("Error initializing User vs Engine session:", e);
+    }
+  }, [triggerUserVsEngineMachineTurn]);
 
   // Fetch initial telemetry match trajectory on mount (persistent rehydration)
   useEffect(() => {
@@ -787,6 +1030,8 @@ function App() {
       initDefenderSession(startingFen, currentPuzzlePlies);
     } else if (mode === 'spectator') {
       initSpectatorSession('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');
+    } else if (mode === 'user_vs_engine') {
+      initUserVsEngineSession(userVsEngineUserColor);
     } else {
       const startFen = solution?.initial_fen || startingFen;
       try {
@@ -800,7 +1045,7 @@ function App() {
       updateArrows(-1, solution?.sequence || []);
       setBanner(null);
     }
-  }, [mode, startingFen, currentPuzzlePlies, initDefenderSession, initSpectatorSession, solution, updateArrows]);
+  }, [mode, startingFen, currentPuzzlePlies, initDefenderSession, initSpectatorSession, initUserVsEngineSession, userVsEngineUserColor, solution, updateArrows]);
 
   // Switch Mode
   const switchMode = (newMode) => {
@@ -822,6 +1067,8 @@ function App() {
           ? 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
           : startingFen
       );
+    } else if (newMode === 'user_vs_engine') {
+      initUserVsEngineSession(userVsEngineUserColor);
     } else {
       const cleanGame = new Chess(startingFen);
       setGame(cleanGame);
@@ -1015,7 +1262,81 @@ function App() {
       }
     }
 
-    // 3. Auto Mode Free Play
+    // 3. User vs AI Engine Mode Handling
+    if (mode === 'user_vs_engine') {
+      if (userVsEngineStatus !== 'user_turn') return false;
+      const pieceColor = currentPiece?.color || piece?.[0];
+      if (pieceColor !== userVsEngineUserColor) return false;
+
+      try {
+        const newGame = new Chess(game.fen());
+        const move = newGame.move({
+          from: sourceSquare,
+          to: targetSquare,
+          promotion: promotionPiece
+        });
+        if (!move) return false;
+
+        const isCheck = newGame.inCheck();
+        const isMate = newGame.isCheckmate();
+        const isDraw = newGame.isDraw() || newGame.isStalemate();
+
+        if (isMate) playVictorySound();
+        else if (isCheck) playCheckSound();
+        else playMoveSound();
+
+        setGame(newGame);
+        setFen(newGame.fen());
+        setArrows([[sourceSquare, targetSquare, 'rgba(6, 182, 212, 0.9)']]);
+
+        const newHistory = [
+          ...userVsEngineHistory,
+          {
+            role: 'user',
+            san: move.san,
+            uci: move.from + move.to + (move.promotion || ''),
+            from_sq: sourceSquare,
+            to_sq: targetSquare
+          }
+        ];
+        setUserVsEngineHistory(newHistory);
+        userVsEngineHistoryRef.current = newHistory;
+        setDualReviewData(null);
+
+        if (isMate) {
+          setUserVsEngineStatus('game_over');
+          setBanner({
+            type: 'victory',
+            emoji: '👑',
+            title: 'Checkmate Delivered!',
+            subtitle: 'Incredible! You checkmated SE-ResNet-8!'
+          });
+          runDualReview(newHistory, 'loss'); // 'loss' for model -> win for user
+          return true;
+        }
+
+        if (isDraw) {
+          playVictorySound();
+          setUserVsEngineStatus('game_over');
+          setBanner({
+            type: 'victory',
+            emoji: '⚖️',
+            title: 'Match Drawn',
+            subtitle: 'The game concluded in a draw or stalemate.'
+          });
+          runDualReview(newHistory, 'draw');
+          return true;
+        }
+
+        triggerUserVsEngineMachineTurn(newGame, newHistory);
+        return true;
+      } catch (e) {
+        console.error("User vs Engine move error:", e);
+        return false;
+      }
+    }
+
+    // 4. Auto Mode Free Play
     try {
       const newGame = new Chess(game.fen());
       const move = newGame.move({
@@ -1055,9 +1376,14 @@ function App() {
       return piece[0] === defenderColor;
     }
 
+    if (mode === 'user_vs_engine') {
+      if (userVsEngineStatus !== 'user_turn') return false;
+      return piece[0] === userVsEngineUserColor;
+    }
+
     // In Auto/Free mode, only allow the side whose turn it is to move
     return piece[0] === game.turn();
-  }, [isPlaying, mode, defenderStatus, defenderColor, game]);
+  }, [isPlaying, mode, defenderStatus, defenderColor, userVsEngineStatus, userVsEngineUserColor, game]);
 
   return (
     <div className="min-h-screen bg-[#090d16] text-slate-100 flex flex-col items-center py-7 px-4 sm:px-6 relative overflow-x-hidden selection:bg-emerald-500/30">
@@ -1116,6 +1442,17 @@ function App() {
             <Swords className="w-4 h-4" />
             <span>Spectator Battle</span>
           </button>
+          <button
+            onClick={() => switchMode('user_vs_engine')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl font-bold text-xs sm:text-sm transition-all ${
+              mode === 'user_vs_engine'
+                ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-lg shadow-purple-950/50 border border-purple-400/30'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-neutral-800/60'
+            }`}
+          >
+            <UserCheck className="w-4 h-4" />
+            <span>Play vs AI Engine</span>
+          </button>
         </div>
       </div>
       
@@ -1137,14 +1474,43 @@ function App() {
             mode={mode}
             defenderColor={defenderColor}
             modelColor={modelColor}
-            isMachineThinking={defenderStatus === 'machine_thinking' || isSolving || (mode === 'spectator' && isStepLoading)}
+            userColor={userVsEngineUserColor}
+            isMachineThinking={
+              defenderStatus === 'machine_thinking' || 
+              isSolving || 
+              (mode === 'spectator' && isStepLoading) ||
+              (mode === 'user_vs_engine' && userVsEngineStatus === 'engine_thinking')
+            }
             pliesSurvived={mode === 'defender' ? pliesSurvived : null}
             banner={banner ? {
               ...banner,
-              action: (
+              action: mode === 'user_vs_engine' ? (
+                <div className="flex items-center gap-2 justify-center">
+                  <button
+                    onClick={() => {
+                      if (dualReviewData) {
+                        setShowReviewModal(true);
+                      } else {
+                        runDualReview(userVsEngineHistory, 'draw');
+                      }
+                    }}
+                    className="flex items-center gap-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:brightness-110 text-white px-3.5 py-2 rounded-xl text-xs font-bold shadow-lg shadow-emerald-950/50 border border-emerald-400/30 transition-all cursor-pointer"
+                  >
+                    <Award className="w-3.5 h-3.5 text-amber-300" />
+                    {dualReviewData ? 'View Review' : isEvaluatingDual ? 'Analyzing...' : 'Review Match'}
+                  </button>
+                  <button
+                    onClick={() => initUserVsEngineSession(userVsEngineUserColor)}
+                    className="flex items-center gap-1.5 bg-neutral-800 hover:bg-neutral-700 text-slate-300 px-3.5 py-2 rounded-xl text-xs font-semibold shadow border border-neutral-700 transition-colors cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    Play Again
+                  </button>
+                </div>
+              ) : (
                 <button
                   onClick={resetBoard}
-                  className="flex items-center gap-1.5 bg-neutral-800 hover:bg-neutral-700 text-slate-200 px-4 py-2 rounded-xl text-xs font-semibold shadow border border-neutral-600 transition-colors mx-auto"
+                  className="flex items-center gap-1.5 bg-neutral-800 hover:bg-neutral-700 text-slate-200 px-4 py-2 rounded-xl text-xs font-semibold shadow border border-neutral-600 transition-colors mx-auto cursor-pointer"
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
                   Try Again
@@ -1156,16 +1522,60 @@ function App() {
         
         {/* Right Column: Control & Telemetry Panels */}
         <div className="col-span-12 lg:col-span-5 xl:col-span-5 flex flex-col gap-4 w-full">
-          <PuzzleSelector 
-            puzzles={PRESET_PUZZLES} 
-            onSelect={loadPuzzle} 
-            customFen={customFen}
-            onCustomFenChange={setCustomFen}
-            onLoadCustom={handleLoadCustom}
-            selectedFen={startingFen}
-          />
+          {mode !== 'user_vs_engine' && (
+            <PuzzleSelector 
+              puzzles={PRESET_PUZZLES} 
+              onSelect={loadPuzzle} 
+              customFen={customFen}
+              onCustomFenChange={setCustomFen}
+              onLoadCustom={handleLoadCustom}
+              selectedFen={startingFen}
+            />
+          )}
           
-          {mode === 'spectator' ? (
+          {mode === 'user_vs_engine' ? (
+            <UserVsEnginePanel 
+              userColor={userVsEngineUserColor}
+              onUserColorChange={(newCol) => {
+                setUserVsEngineUserColor(newCol);
+                initUserVsEngineSession(newCol);
+              }}
+              history={userVsEngineHistory}
+              status={userVsEngineStatus}
+              onNewGame={() => initUserVsEngineSession(userVsEngineUserColor)}
+              onResign={() => {
+                setBanner({
+                  type: 'checkmate',
+                  emoji: '🏳️',
+                  title: 'Resignation',
+                  subtitle: 'You resigned the match. SE-ResNet-8 wins.'
+                });
+                setUserVsEngineStatus('game_over');
+                runDualReview(userVsEngineHistory, 'win');
+              }}
+              onOfferDraw={() => {
+                setBanner({
+                  type: 'victory',
+                  emoji: '🤝',
+                  title: 'Draw Agreed',
+                  subtitle: 'The game concluded in a mutual draw.'
+                });
+                setUserVsEngineStatus('game_over');
+                runDualReview(userVsEngineHistory, 'draw');
+              }}
+              onReviewGame={() => runDualReview(userVsEngineHistory, userVsEngineStatus === 'game_over' ? 'draw' : 'in_progress')}
+              isEvaluating={isEvaluatingDual}
+              latestEngineMove={userVsEngineLatestMove}
+              useBook={userVsEngineUseBook}
+              setUseBook={setUserVsEngineUseBook}
+              useMinimaxSearch={userVsEngineUseSearch}
+              setUseMinimaxSearch={setUserVsEngineUseSearch}
+              openingTemperature={userVsEngineTemp}
+              setOpeningTemperature={setUserVsEngineTemp}
+              hasReviewData={!!dualReviewData}
+              onOpenReviewModal={() => setShowReviewModal(true)}
+            />
+          ) : mode === 'spectator' ? (
             <SpectatorPanel 
               spectatorStatus={spectatorStatus}
               activeTurnRole={activeSpectatorRole}
@@ -1223,16 +1633,30 @@ function App() {
             />
           )}
           
-          <TelemetryPanel 
-            solution={solution}
-            currentStep={currentStep}
-            inferenceTime={inferenceTime}
-            backendStatus={backendStatus}
-          />
+          {mode !== 'user_vs_engine' && (
+            <TelemetryPanel 
+              solution={solution}
+              currentStep={currentStep}
+              inferenceTime={inferenceTime}
+              backendStatus={backendStatus}
+            />
+          )}
         </div>
       </div>
+
+      {/* Post-Game Stockfish Dual Review Modal */}
+      <GameReviewModal 
+        isOpen={showReviewModal}
+        onClose={() => setShowReviewModal(false)}
+        reviewData={dualReviewData}
+        onNewGame={() => {
+          setShowReviewModal(false);
+          initUserVsEngineSession(userVsEngineUserColor);
+        }}
+      />
     </div>
   );
 }
 
 export default App;
+
