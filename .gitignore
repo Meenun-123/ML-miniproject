@@ -5,11 +5,12 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-# Model weights are pushed (each <100MB)
 bin/
 data/*.csv
 data/*.zst
+data/*.json
 node_modules/
-frontend/dist/
 .env
 *.log
+.pytest_cache/
+

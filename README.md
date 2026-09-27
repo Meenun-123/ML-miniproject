@@ -1,273 +1,232 @@
-# Chess Mate Vision — Deep CNN for Tactical Checkmate Recognition
+# SE-ResNet-8: Dual-Head Deep Residual Neural Network with Squeeze-and-Excitation Attention for Chess Policy & Value Prediction
 
-A deep learning and computer vision-inspired chess tactical system designed to recognize and execute forced checkmate patterns (such as Mate in 1 and Mate in 2) directly from spatial board representations. The project features an end-to-end pipeline: automated dataset extraction from millions of Lichess puzzles, PyTorch CNN training and ONNX export, high-performance FastAPI inference with legal-move masking and rollout simulation, and an interactive React web interface with animated board playback and telemetry.
-
----
-
-## 1. Overview
-
-**Chess Mate Vision** tackles tactical checkmate recognition by framing move prediction as a spatial pattern classification task over an $8 \times 8 \times 12$ bitboard representation:
-
-- **Data Pipeline**: Downloads and filters over 4 million puzzles from the Lichess Open Database down to clean forced checkmate patterns (`mateIn1`, `mateIn2`).
-- **Deep CNN Architecture (`ChessTacticsCNN`)**: A 4-stage convolutional network with spatial batch normalization and dense classification layers predicting across all $4,096$ possible origin-destination square pairs.
-- **Inference & Rollout Service**: FastAPI backend supporting both single-position move prediction (with illegal move masking) and multi-step tactical rollout simulation that selects the most stubborn defensive counter-moves until checkmate is reached.
-- **Interactive UI**: Modern React + Vite application featuring `react-chessboard`, dynamic SVG arrow overlays for attack trajectories, step-by-step playback controls, and real-time model telemetry (inference latency, top move confidence distribution).
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-EE4C2C.svg?style=flat&logo=pytorch)](https://pytorch.org/)
+[![ONNX](https://img.shields.io/badge/ONNX-Ready-005CED.svg?style=flat&logo=onnx)](https://onnx.ai/)
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg?style=flat&logo=python)](https://python.org/)
+[![License: Academic](https://img.shields.io/badge/License-Academic%20Research-red.svg)](README.md)
 
 ---
 
-## 2. Architecture
+## Academic Credentials & Notice
 
-```mermaid
-flowchart LR
-    A["Lichess CSV<br/>(Raw Puzzles)"] --> B["Data Pipeline<br/>(Filter & Preprocess)"]
-    B --> C["8×8×12 Tensor<br/>(Spatial Bitboard)"]
-    C --> D["CNN (4 conv blocks)<br/>(Feature Extraction)"]
-    D --> E["4096-Class Softmax<br/>(Move Distribution & Masking)"]
-    E --> F["FastAPI<br/>(Inference & Rollout Engine)"]
-    F --> G["React Chessboard<br/>(Interactive UI & Playback)"]
-```
+- **Student Author:** P Meenun Reddy
+- **Roll Number:** NC.SC.U4CSE24029
+- **Department:** Computer Science and Engineering (CSE - A)
+- **Year / Semester:** 3rd Year
+- **Course:** Neural Networks and Deep Learning (ML Model Building Project)
 
-### End-to-End Pipeline Stages
-
-1. **Ingestion & Filtering**: The raw Lichess puzzle archive is streamed in compressed chunks. Puzzles labeled with `mateIn1` and `mateIn2` are isolated and cleaned.
-2. **Bitboard Tensorization**: Board states in FEN notation are parsed into rank-major spatial tensors of shape `(12, 8, 8)`, preserving board geometry and piece relationships.
-3. **Feature Extraction**: Four convolutional blocks extract localized tactical motifs (forks, pins, open files, back-rank weaknesses, king exposure).
-4. **Action Space Classification**: The dense head projects spatial features into a $4,096$-dimensional move vector. Moves illegal in the current position are masked with $-\infty$ before softmax normalization.
-5. **FastAPI Serving**: Serves predictions with sub-20ms latency using ONNX Runtime (or PyTorch fallback) and performs iterative rollouts.
-6. **React Chessboard**: Consumes API outputs to render animated pieces, directional attack vectors, and step-by-step mate sequences.
+> [!CAUTION]
+> **Academic Integrity & Copyright Notice:**
+> This repository contains the original machine learning model architecture, training pipeline, and dataset engineering created by **P Meenun Reddy** for the *Neural Networks and Deep Learning* course evaluation. Unauthorized copying, plagiarism, duplication, or redistribution of this model code, architecture, or trained weights is strictly prohibited.
 
 ---
 
-## 3. Project Structure
+## 1. Project Abstract
+
+Standard convolutional neural networks applied to chess board evaluation struggle to balance global tactical spatial reasoning (e.g., long-range bishop diagonals, pinned pieces, and king exposure) with localized piece interactions. 
+
+**SE-ResNet-8** is a custom deep convolutional neural network featuring:
+1. **18-Plane Canonical Spatial Board Representation**: Encodes piece positions, legal attack maps, pins, check indicators, and castling rights from the active player's forward-facing perspective.
+2. **Squeeze-and-Excitation (SE) Channel Attention**: Dynamically recalibrates feature map channels by modeling inter-channel dependencies through adaptive global pooling and non-linear gating bottlenecks ($r=8$).
+3. **Decoupled Dual-Head Architecture**:
+   - **Policy Head**: Predicts discrete move probability distributions across the full $4,096$-dimensional origin-destination action space ($64 \times 64$).
+   - **Value Head**: Estimates position win certainty $V(s) \in [-1.0, +1.0]$ via a non-linear scalar projection with Tanh activation.
+
+---
+
+## 2. Neural Architecture
+
+![SE-ResNet-8 Architecture](data/se_resnet8_architecture.png)
+
+### Architectural Specifications
+
+| Component | Layer Specification | Output Dimensions | Parameters |
+| :--- | :--- | :--- | :--- |
+| **Input Tensor** | Canonical 18-Plane Spatial Encoding | $(B, 18, 8, 8)$ | - |
+| **Stem Convolution** | Conv2d(18 $\to$ 128, $3 \times 3$, pad 1) + BN + ReLU | $(B, 128, 8, 8)$ | 21,000 |
+| **Backbone (4× Blocks)** | 4× Residual Blocks with Squeeze-and-Excitation | $(B, 128, 8, 8)$ | 1,188,864 |
+| **Policy Head** | Conv2d(128 $\to$ 64, $1 \times 1$) + BN + ReLU + FC($4096 \to 4096$) | $(B, 4096)$ | 16,785,472 |
+| **Value Head** | Conv2d(128 $\to$ 32, $1 \times 1$) + BN + ReLU + FC($2048 \to 128$) + FC($128 \to 1$) | $(B, 1)$ | 266,657 |
+| **Total Trainable** | Full Dual-Head SE-ResNet-8 Model | - | **~18,261,993** |
+
+---
+
+## 3. Mathematical Formulation
+
+### 3.1 Squeeze-and-Excitation Channel Attention
+For any intermediate convolutional feature map $\mathbf{X} \in \mathbb{R}^{C \times H \times W}$ with $C=128$ and $H=W=8$:
+
+1. **Squeeze Step (Global Average Pooling):**
+   $$z_c = \mathbf{F}_{sq}(\mathbf{u}_c) = \frac{1}{H \times W} \sum_{i=1}^{H} \sum_{j=1}^{W} u_c(i, j), \quad \mathbf{z} \in \mathbb{R}^{C}$$
+
+2. **Excitation Step (Two-Layer Bottleneck with Reduction Ratio $r=8$):**
+   $$\mathbf{s} = \mathbf{F}_{ex}(\mathbf{z}, \mathbf{W}) = \sigma\Big(\mathbf{W}_2 \ \delta(\mathbf{W}_1 \mathbf{z})\Big)$$
+   where $\mathbf{W}_1 \in \mathbb{R}^{\frac{C}{r} \times C} = \mathbb{R}^{16 \times 128}$, $\mathbf{W}_2 \in \mathbb{R}^{C \times \frac{C}{r}} = \mathbb{R}^{128 \times 16}$, $\delta$ is the ReLU activation, and $\sigma$ is the Sigmoid gating function.
+
+3. **Feature Recalibration & Residual Connection:**
+   $$\widetilde{\mathbf{x}}_c = s_c \cdot \mathbf{u}_c, \qquad \mathbf{Y} = \text{ReLU}\Big(\widetilde{\mathbf{X}} + \mathbf{X}_{\text{residual}}\Big)$$
+
+### 3.2 Multi-Task Composite Loss Function
+The model is optimized end-to-end using a joint multi-task objective:
+$$\mathcal{L}_{\text{total}}(\theta) = \mathcal{L}_{\text{policy}}(\mathbf{p}, \mathbf{y}_{\text{move}}) + \lambda \mathcal{L}_{\text{value}}(v, y_{\text{val}})$$
+
+- **Policy Loss:** Categorical Cross-Entropy over $4,096$ move classes:
+  $$\mathcal{L}_{\text{policy}} = -\sum_{i=1}^{4096} y_{\text{move}, i} \log(p_i)$$
+- **Value Loss:** Mean Squared Error (MSE) between scalar prediction and ground-truth tactical outcome:
+  $$\mathcal{L}_{\text{value}} = \frac{1}{B} \sum_{k=1}^{B} (v_k - y_{\text{val}, k})^2$$
+  with loss weighting factor $\lambda = 0.5$.
+
+---
+
+## 4. 18-Plane Canonical Board Representation
+
+Each chess position is mapped into an 18-channel $8 \times 8$ bitboard tensor:
+- **Channels 0–5:** Active player's pieces $[P, N, B, R, Q, K]$
+- **Channels 6–11:** Opponent's pieces $[p, n, b, r, q, k]$
+- **Channel 12:** Active player legal attack influence map
+- **Channel 13:** Opponent legal attack influence map
+- **Channel 14:** Absolute pinned piece spatial plane
+- **Channel 15:** In-check indicator plane (broadcast $1$s or $0$s)
+- **Channel 16:** Active player castling rights (kingside / queenside quadrants)
+- **Channel 17:** Opponent castling rights (kingside / queenside quadrants)
+
+**Canonical Perspective Inversion:** If Black is to move, the board is mirrored along ranks ($y \mapsto 7 - y$) and piece colors are inverted. Thus, the neural network *always* solves positions from the perspective of White pushing forward.
+
+---
+
+## 5. Repository Structure
 
 ```
 ML-miniproject/
 ├── ml/
-│   ├── __init__.py
-│   ├── dataset.py          # Data engineering, FEN→tensor, move encoding, PyTorch Dataset
-│   ├── train.py            # CNN architecture, training loop, checkpointing, ONNX export
-│   └── download_data.py    # Lichess puzzle download & filter script
-├── backend/
-│   ├── __init__.py
-│   └── app.py              # FastAPI inference service (/health, /predict-move, /solve-mate)
-├── frontend/
-│   ├── package.json
-│   ├── vite.config.js
-│   ├── tailwind.config.js
-│   ├── postcss.config.js
-│   ├── index.html
-│   └── src/
-│       ├── main.jsx
-│       ├── App.jsx          # Main app with chessboard, puzzle selector, solve controls
-│       ├── index.css        # Tailwind directives + custom dark theme
-│       └── components/
-│           ├── ChessboardPanel.jsx   # Interactive board with arrows & animations
-│           ├── PuzzleSelector.jsx    # Preset puzzles + custom FEN input
-│           ├── SolveControls.jsx     # Play/Pause/Step/Reset playback controls
-│           └── TelemetryPanel.jsx    # ML inference stats, confidence bars, SAN notation
-├── weights/                 # Model checkpoint directory (.gitkeep)
-├── data/                    # Puzzle CSV directory (.gitkeep)
-├── .gitignore
-├── requirements.txt
-└── README.md
+│   ├── dataset.py                # 18-Plane Canonical Board Encoding & PyTorch Dataset
+│   ├── train.py                  # SE-ResNet-8 Model Architecture & Training Loop
+│   ├── download_data.py          # Lichess tactical dataset download pipeline
+│   ├── mine_blunders.py          # Tactical blunder mining for curriculum learning
+│   ├── harvest_opening_concepts.py # Tactical motif harvesting script
+│   └── harvest_sacrifices.py     # Sound sacrifice mining
+├── weights/
+│   ├── chess_mate_cnn.pt         # Trained PyTorch model checkpoint (~70 MB)
+│   ├── chess_mate_cnn.onnx       # Exported ONNX graph (cross-platform deployment)
+│   └── chess_mate_cnn.onnx.data  # ONNX tensor weights (~70 MB)
+├── data/
+│   ├── se_resnet8_architecture.png # 300 DPI high-res architecture diagram
+│   └── books/                    # Polyglot opening theory weights
+│       ├── performance.bin
+│       └── titans.bin
+├── inference.py                  # Standalone CLI inference & FEN evaluation tool
+├── evaluate.py                   # Benchmark & accuracy evaluation script
+├── generate_arch_diagram.py      # Reproducible architecture diagram generator
+├── generate_report.py            # Academic report compiler (FPDF2)
+├── SE_ResNet8_Chess_Engine_Project_Report.pdf # 10-Page Course Project Report
+├── requirements.txt              # Pure machine learning dependencies
+└── README.md                     # Project documentation
 ```
 
 ---
 
-## 4. Quick Start
+## 6. Quickstart: Installation & Inference
 
-### Prerequisites
+### 6.1 Environment Setup
+```bash
+# Clone the repository
+git clone https://github.com/Meenun-123/ML-miniproject.git
+cd ML-miniproject
 
-- **Python**: 3.10 or higher
-- **Node.js**: 18.0 or higher (with `npm`)
+# Create virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
 
-### Setup & Run (One Command)
+# Install pure ML requirements
+pip install -r requirements.txt
+```
 
-To run both the FastAPI backend and React frontend simultaneously in a single terminal:
+### 6.2 Running Model Inference
+Evaluate any chess board position (in FEN notation) to inspect the value score and top-5 predicted moves:
 
 ```bash
-./run.sh
-```
-*(Or alternatively: `python run.py` or `npm start`)*
+# Evaluate an Italian Game position with PyTorch
+python inference.py --fen "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 1 5"
 
-This automated launcher will:
-- Check your environment and Python virtualenv.
-- Verify frontend dependencies (runs `npm install` if needed).
-- Clear any lingering processes on ports 8000 & 5173.
-- Launch the FastAPI server and Vite dev server simultaneously.
-- Automatically launch your browser at [http://localhost:5173](http://localhost:5173).
-- Gracefully shut down both servers when you press `Ctrl+C`.
-
----
-
-### Manual Multi-Terminal Setup (Optional)
-
-If you prefer to run the backend and frontend in separate terminals:
-
-1. **Start the FastAPI Backend**:
-   ```bash
-   .venv/bin/python backend/app.py
-   ```
-2. **Start the React Frontend**:
-   ```bash
-   cd frontend && npm run dev
-   ```
-
----
-
-## 5. Model Architecture
-
-The core model is **`ChessTacticsCNN`**, a custom deep convolutional neural network engineered for spatial chess pattern recognition:
-
-```
-Input: 8×8×12 Bitboard Tensor
-  │
-  ├── [Conv Block 1] Conv2d(12 → 64, kernel=3, padding=1) + BatchNorm2d + ReLU
-  ├── [Conv Block 2] Conv2d(64 → 128, kernel=3, padding=1) + BatchNorm2d + ReLU
-  ├── [Conv Block 3] Conv2d(128 → 128, kernel=3, padding=1) + BatchNorm2d + ReLU
-  ├── [Conv Block 4] Conv2d(128 → 256, kernel=3, padding=1) + BatchNorm2d + ReLU
-  │
-  ├── Flatten (256 × 8 × 8 = 16,384 features)
-  ├── Fully Connected Linear(16384 → 512) + ReLU
-  ├── Dropout(p=0.3)
-  └── Output Linear(512 → 4096)
-        │
-        └── Illegal Move Masking (-inf) ──► Softmax ──► Probability Distribution
+# Or run using ONNX Runtime
+python inference.py --onnx --fen "r1bqkb1r/pppp1ppp/2n5/4p3/2B1n3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 4"
 ```
 
-### Representation Details
+**Sample Output:**
+```
+=================================================================
+     SE-ResNet-8 Dual-Head Neural Chess Engine Inference
+     Architecture: 4× SE-ResBlock (128 ch) | 18-Plane Input
+=================================================================
 
-- **Input Tensor (`12 × 8 × 8`)**:
-  - Channels `0`–`5`: White pieces `[Pawn, Knight, Bishop, Rook, Queen, King]`
-  - Channels `6`–`11`: Black pieces `[pawn, knight, bishop, rook, queen, king]`
-  - Spatial Grid: $8 \times 8$ board where rank 8 is row 0 and file A is column 0.
-- **Output Action Space ($4,096$ Classes)**:
-  - Discrete move indexing: $\text{class\_index} = (\text{from\_sq} \times 64) + \text{to\_sq}$ where $\text{square} \in [0, 63]$.
-  - **Illegal Move Masking**: At inference time, logits corresponding to illegal moves in the current position are set to $-\infty$ prior to softmax evaluation, strictly guaranteeing that the predicted move conforms to chess rules.
+FEN: r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 1 5
+Active Player to Move: White
 
----
+      a   b   c   d   e   f   g   h
+    +-------------------------------+
+  8 | r | . | b | q | k | . | . | r | 8
+  7 | p | p | p | p | . | p | p | p | 7
+  6 | . | . | n | . | . | n | . | . | 6
+  5 | . | . | b | . | p | . | . | . | 5
+  4 | . | . | B | . | P | . | . | . | 4
+  3 | . | . | . | P | . | N | . | . | 3
+  2 | P | P | P | . | . | P | P | P | 2
+  1 | R | N | B | Q | K | . | . | R | 1
+    +-------------------------------+
+      a   b   c   d   e   f   g   h
 
-## 6. API Reference
+-----------------------------------------------------------------
+ POSITION EVALUATION (Value Head)
+-----------------------------------------------------------------
+  • Scalar Value V(s):       +1.0000  (in range [-1.0, +1.0])
+  • Active Win Probability:  100.00%
+  • Positional Assessment:   Decisive advantage for White
 
-The backend exposes three REST endpoints:
+-----------------------------------------------------------------
+ CANDIDATE MOVE PREDICTIONS (Policy Head - Top 5)
+-----------------------------------------------------------------
+  Rank  SAN      UCI      Probability    Confidence Bar
+  ---- ------- ------- ------------- --------------------
+  #1    Bb3      c4b3       7.44%       ██
+  #2    Rg1      h1g1       6.99%       ██
+  #3    c3       c2c3       4.73%       █
+  #4    Rf1      h1f1       4.58%       █
+  #5    Ke2      e1e2       4.51%       █
+-----------------------------------------------------------------
+```
 
-### 1. `GET /health`
-Checks server health, execution device, and model checkpoint availability.
+### 6.3 Evaluating Model Accuracy & Latency
+Run the evaluation benchmark:
+```bash
+python evaluate.py
+```
 
-- **Request**:
-  ```http
-  GET /health HTTP/1.1
-  Host: localhost:8000
-  ```
-- **Response**:
-  ```json
-  {
-    "status": "ok",
-    "device": "cpu",
-    "model_loaded": true,
-    "model_format": "onnx"
-  }
-  ```
-
----
-
-### 2. `POST /predict-move`
-Evaluates a single position given by its FEN string and predicts top candidate moves with associated confidences and legal status.
-
-- **Request**:
-  ```http
-  POST /predict-move HTTP/1.1
-  Host: localhost:8000
-  Content-Type: application/json
-
-  {
-    "fen": "r1bqkb1r/pppp1ppp/2n5/4p3/2B1n3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 5"
-  }
-  ```
-- **Response**:
-  ```json
-  {
-    "fen": "r1bqkb1r/pppp1ppp/2n5/4p3/2B1n3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 5",
-    "top_moves": [
-      {
-        "uci": "f3f7",
-        "san": "Qxf7#",
-        "confidence": 0.9942,
-        "is_legal": true,
-        "is_check": true,
-        "is_checkmate": true
-      },
-      {
-        "uci": "c4f7",
-        "san": "Bxf7+",
-        "confidence": 0.0035,
-        "is_legal": true,
-        "is_check": true,
-        "is_checkmate": false
-      },
-      {
-        "uci": "f3e4",
-        "san": "Qxe4",
-        "confidence": 0.0018,
-        "is_legal": true,
-        "is_check": false,
-        "is_checkmate": false
-      }
-    ],
-    "latency_ms": 11.8
-  }
-  ```
+### 6.4 Training from Scratch
+To train the SE-ResNet-8 model on tactical datasets with learning rate warm-restarts:
+```bash
+python ml/train.py \
+    --data_path data/mate_puzzles.csv \
+    --epochs 20 \
+    --batch_size 128 \
+    --lr 2e-3 \
+    --num_blocks 4 \
+    --channels 128 \
+    --scheduler cosine_restarts \
+    --restart_epochs 5
+```
 
 ---
 
-### 3. `POST /solve-mate`
-Performs an iterative multi-ply simulation: the CNN plays the attacking side while defensive replies are determined via opponent simulation, returning the full move-by-move sequence leading to checkmate.
+## 7. Model Checkpoints & Artifacts
 
-- **Request**:
-  ```http
-  POST /solve-mate HTTP/1.1
-  Host: localhost:8000
-  Content-Type: application/json
-
-  {
-    "fen": "r1bqkb1r/pppp1ppp/2n5/4p3/2B1n3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 5",
-    "max_depth": 6
-  }
-  ```
-- **Response**:
-  ```json
-  {
-    "success": true,
-    "is_checkmate": true,
-    "total_moves": 1,
-    "sequence": [
-      {
-        "step": 1,
-        "fen_before": "r1bqkb1r/pppp1ppp/2n5/4p3/2B1n3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 5",
-        "fen_after": "r1bqkb1r/pppp1Qpp/2n5/4p3/2B1n3/8/PPPP1PPP/RNB1K1NR b KQkq - 0 5",
-        "move": "f3f7",
-        "san": "Qxf7#",
-        "player": "white",
-        "confidence": 0.9942,
-        "is_check": true,
-        "is_checkmate": true
-      }
-    ],
-    "latency_ms": 18.2
-  }
-  ```
+- **PyTorch Model Checkpoint:** [`weights/chess_mate_cnn.pt`](weights/chess_mate_cnn.pt)
+- **ONNX Computation Graph:** [`weights/chess_mate_cnn.onnx`](weights/chess_mate_cnn.onnx)
+- **Project Report (10 Pages, IEEE style):** [`SE_ResNet8_Chess_Engine_Project_Report.pdf`](SE_ResNet8_Chess_Engine_Project_Report.pdf)
+- **High-Resolution Architecture Diagram:** [`data/se_resnet8_architecture.png`](data/se_resnet8_architecture.png)
 
 ---
 
-## 7. Demo Mode
+## 8. License & Academic Disclaimer
 
-The backend includes a built-in **Demo Mode**:
-- If `weights/chess_mate_cnn.pt` or `weights/chess_mate_cnn.onnx` has not yet been generated via training, the service automatically initializes `ChessTacticsCNN` with random weights.
-- Because illegal-move masking remains active even with random weights, the model will always return valid legal moves.
-- This allows full front-end development, board interaction testing, and playback animation verification immediately without needing to complete the model training step first.
-
----
-
-## 8. License
-
-This project is open-source and licensed under the [MIT License](LICENSE).
+Copyright &copy; 2026 **P Meenun Reddy**. All Rights Reserved.  
+Submitted in partial fulfillment of the requirements for the course **Neural Networks and Deep Learning**, Department of Computer Science and Engineering.

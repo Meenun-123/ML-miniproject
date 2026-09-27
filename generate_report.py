@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Generate SE-ResNet-8 Chess Engine Mini-Project Report as PDF."""
+"""Generate SE-ResNet-8 Chess Engine ML Model Building Report as PDF."""
+import os
 from fpdf import FPDF
 
 class ReportPDF(FPDF):
@@ -76,10 +77,9 @@ def build_report():
     pdf.set_font("Helvetica", "B", 26)
     pdf.set_text_color(20, 60, 120)
     pdf.cell(0, 14, "SE-ResNet-8 Neural Chess Engine", align="C", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(4)
-    pdf.set_font("Helvetica", "", 14)
+    pdf.set_font("Helvetica", "B", 14)
     pdf.set_text_color(60, 60, 60)
-    pdf.cell(0, 8, "Mini-Project Report", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 8, "Machine Learning Model Building & System Report", align="C", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(12)
 
     pdf.set_draw_color(20, 60, 120)
@@ -210,35 +210,18 @@ def build_report():
         "learned positional evaluation with deterministic tactical search and anti-delusion safeguards."
     )
 
-    # Architecture diagram as text
-    pdf.sub_section("Figure 0: SE-ResNet-8 Dual-Head End-to-End Architecture")
-    pdf.code_block("""
-Chess Board Position (FEN)
-        |
-[18-Plane Canonical Encoder]
-  (Piece Maps + Attacks + Pins + Check + Castling)
-  Shape: (Batch, 18, 8, 8)
-        |
-[Stem Conv2d(18, 128, 3x3) + BN + ReLU]
-        |
-[SE-Residual Block x4]
-  Conv(3x3) -> BN -> ReLU -> Conv(3x3) -> BN
-  -> Squeeze-Excitation(128, r=8) -> Skip Add -> ReLU
-        |
- -------+-------
- |             |
- v             v
-[Policy Head]     [Value Head]
-Conv(1x1, 64)    Conv(1x1, 32)
-BN + ReLU         BN + ReLU
-Flatten            Flatten
-Linear(4096)      Linear(2048, 128)
-  |               ReLU + Linear(128, 1)
-  |               Tanh
-  v               v
-Move Logits      Win Probability
-(4096 classes)   [-1.0, +1.0]
-""")
+    # Architecture diagram image
+    arch_img_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "se_resnet8_architecture.png")
+    if os.path.exists(arch_img_path):
+        img_w = 175
+        img_x = pdf.l_margin + (pdf.epw - img_w) / 2
+        pdf.image(arch_img_path, x=img_x, w=img_w)
+        pdf.ln(2)
+        pdf.set_font("Helvetica", "I", 8.5)
+        pdf.set_text_color(80, 80, 80)
+        pdf.cell(0, 5, "Figure 0: SE-ResNet-8 Dual-Head End-to-End Neural Architecture with Channel Attention", align="C", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(0, 0, 0)
+        pdf.ln(3)
 
     pdf.sub_section("Key Architectural Novelties")
     novelties = [
@@ -561,8 +544,11 @@ python run.py
 # Backend: http://localhost:8000  |  Frontend: http://localhost:5173""")
 
     # Save
-    out_path = "/home/meenun/Documents/ML-miniproject/SE_ResNet8_Chess_Engine_Mini_Project_Report.pdf"
+    out_path = "/home/meenun/Documents/ML-miniproject/SE_ResNet8_Chess_Engine_Project_Report.pdf"
     pdf.output(out_path)
+    # Also save to previous filename so both references remain valid
+    old_path = "/home/meenun/Documents/ML-miniproject/SE_ResNet8_Chess_Engine_Mini_Project_Report.pdf"
+    pdf.output(old_path)
     print(f"Report generated: {out_path}")
     return out_path
 
