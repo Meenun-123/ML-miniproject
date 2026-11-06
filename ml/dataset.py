@@ -2,8 +2,13 @@ import random
 from typing import Tuple
 
 import chess
+import numpy as np
 import pandas as pd
-import torch
+
+try:
+    import torch
+except ImportError:
+    torch = None
 
 
 def encode_move(move: chess.Move) -> int:
@@ -60,9 +65,9 @@ def canonical_move_to_real(move: chess.Move, is_black: bool) -> chess.Move:
     return move
 
 
-def board_to_tensor(board: chess.Board) -> torch.Tensor:
+def board_to_numpy(board: chess.Board) -> np.ndarray:
     """
-    Convert a chess.Board to an enriched 18-plane (18, 8, 8) float32 tensor.
+    Convert a chess.Board to an enriched 18-plane (18, 8, 8) float32 numpy array.
 
     Canonical Perspective:
     - If Black to move, vertically flip board geometry and swap colors so the
@@ -84,7 +89,7 @@ def board_to_tensor(board: chess.Board) -> torch.Tensor:
     else:
         b = board
 
-    tensor = torch.zeros(18, 8, 8, dtype=torch.float32)
+    arr = np.zeros((18, 8, 8), dtype=np.float32)
 
     # Channels 0-5: Active player pieces [P, N, B, R, Q, K]
     piece_types = [
@@ -99,52 +104,63 @@ def board_to_tensor(board: chess.Board) -> torch.Tensor:
         for sq in b.pieces(pt, chess.WHITE):
             row = 7 - chess.square_rank(sq)
             col = chess.square_file(sq)
-            tensor[ch, row, col] = 1.0
+            arr[ch, row, col] = 1.0
 
     # Channels 6-11: Opponent pieces [p, n, b, r, q, k]
     for ch, pt in enumerate(piece_types, start=6):
         for sq in b.pieces(pt, chess.BLACK):
             row = 7 - chess.square_rank(sq)
             col = chess.square_file(sq)
-            tensor[ch, row, col] = 1.0
+            arr[ch, row, col] = 1.0
 
     # Channels 12, 13, 14: Attack maps & pins
     for sq in chess.SQUARES:
         row = 7 - chess.square_rank(sq)
         col = chess.square_file(sq)
         if b.is_attacked_by(chess.WHITE, sq):
-            tensor[12, row, col] = 1.0
+            arr[12, row, col] = 1.0
         if b.is_attacked_by(chess.BLACK, sq):
-            tensor[13, row, col] = 1.0
+            arr[13, row, col] = 1.0
         if b.is_pinned(chess.WHITE, sq):
-            tensor[14, row, col] = 1.0
+            arr[14, row, col] = 1.0
 
     # Channel 15: In-check indicator plane
     if b.is_check():
-        tensor[15, :, :] = 1.0
+        arr[15, :, :] = 1.0
 
     # Channel 16: Active player castling availability
     if b.has_kingside_castling_rights(chess.WHITE):
-        tensor[16, :, 4:] = 1.0
+        arr[16, :, 4:] = 1.0
     if b.has_queenside_castling_rights(chess.WHITE):
-        tensor[16, :, :4] = 1.0
+        arr[16, :, :4] = 1.0
 
     # Channel 17: Opponent castling availability
     if b.has_kingside_castling_rights(chess.BLACK):
-        tensor[17, :, 4:] = 1.0
+        arr[17, :, 4:] = 1.0
     if b.has_queenside_castling_rights(chess.BLACK):
-        tensor[17, :, :4] = 1.0
+        arr[17, :, :4] = 1.0
 
-    return tensor
+    return arr
 
 
-def fen_to_tensor(fen: str) -> torch.Tensor:
+def board_to_tensor(board: chess.Board):
+    """Convert a chess.Board to an enriched 18-plane (18, 8, 8) float32 tensor."""
+    arr = board_to_numpy(board)
+    if torch is not None:
+        return torch.from_numpy(arr)
+    return arr
+
+
+def fen_to_tensor(fen: str):
     """Convert a FEN string into an 18-plane canonical float32 tensor."""
     board = chess.Board(fen)
     return board_to_tensor(board)
 
 
-class ChessMateDataset(torch.utils.data.Dataset):
+_BaseDataset = torch.utils.data.Dataset if torch is not None else object
+
+
+class ChessMateDataset(_BaseDataset):
     """
     Dataset for chess tactical mate puzzles.
     Loads filtered Lichess CSV and produces (tensor, label, value_target).

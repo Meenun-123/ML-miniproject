@@ -195,13 +195,40 @@ Active Player to Move: White
 -----------------------------------------------------------------
 ```
 
-### 6.3 Evaluating Model Accuracy & Latency
-Run the evaluation benchmark:
+### 6.3 Interactive CLI Match
+Play directly against the trained SE-ResNet-8 neural engine in your terminal:
+
 ```bash
-python evaluate.py
+# Play as White against SE-ResNet-8 (PyTorch)
+python inference.py -i
+
+# Play as Black using lightweight ONNX Runtime
+python inference.py --onnx -i --play_as black
 ```
 
-### 6.4 Training from Scratch
+### 6.4 Evaluating Model Accuracy & Latency
+Run the evaluation benchmark across both backends (measures Top-1/3/5 accuracy, inference latency, and throughput):
+
+```bash
+# Evaluate with PyTorch
+python evaluate.py
+
+# Evaluate with ONNX Runtime
+python evaluate.py --onnx
+```
+
+### 6.5 Compiling Academic Artifacts
+Regenerate high-resolution architecture diagrams and the 10-page academic report PDF:
+
+```bash
+# Generate 300 DPI architecture diagram
+python generate_arch_diagram.py
+
+# Compile IEEE-style 10-page course project report
+python generate_report.py
+```
+
+### 6.6 Training from Scratch
 To train the SE-ResNet-8 model on tactical datasets with learning rate warm-restarts:
 ```bash
 python ml/train.py \

@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Generate SE-ResNet-8 Chess Engine ML Model Building Report as PDF."""
 import os
+from pathlib import Path
 from fpdf import FPDF
+
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 class ReportPDF(FPDF):
     def header(self):
@@ -544,13 +547,13 @@ python run.py
 # Backend: http://localhost:8000  |  Frontend: http://localhost:5173""")
 
     # Save
-    out_path = "/home/meenun/Documents/ML-miniproject/SE_ResNet8_Chess_Engine_Project_Report.pdf"
-    pdf.output(out_path)
+    out_path = PROJECT_ROOT / "SE_ResNet8_Chess_Engine_Project_Report.pdf"
+    pdf.output(str(out_path))
     # Also save to previous filename so both references remain valid
-    old_path = "/home/meenun/Documents/ML-miniproject/SE_ResNet8_Chess_Engine_Mini_Project_Report.pdf"
-    pdf.output(old_path)
+    old_path = PROJECT_ROOT / "SE_ResNet8_Chess_Engine_Mini_Project_Report.pdf"
+    pdf.output(str(old_path))
     print(f"Report generated: {out_path}")
-    return out_path
+    return str(out_path)
 
 
 if __name__ == "__main__":
