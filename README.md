@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/thumbnail.jpg" alt="Chess Mate Vision — Deep Learning Chess AI" width="100%" />
+</p>
+
 # SE-ResNet-8: Dual-Head Deep Residual Neural Network with Squeeze-and-Excitation Attention for Chess Policy & Value Prediction
 
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-EE4C2C.svg?style=flat&logo=pytorch)](https://pytorch.org/)
